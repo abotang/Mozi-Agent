@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "skill_id": "air.air_strike",
+  "service": "air",
+  "display_name": "飞机对空打击",
+  "description": "为蓝方飞机创建对已探测空中接触的打击任务。",
+  "task_key": "airAirStrike",
+  "script": "02-飞机对空打击.ps1",
+  "mission_type": "Strike",
+  "classify": "Air",
+  "unit_types": ["Aircraft", "飞机"],
+  "requires_area": false,
+  "area_type_id": null,
+  "requires_target": true,
+  "target_kind": "Aircraft",
+  "supports_escort": true,
+  "supports_loadout": true,
+  "supports_routes": false,
+  "rules": ["目标必须是蓝方当前空中 contact GUID", "可分配独立护航飞机", "打击任务不划巡逻区"]
+}

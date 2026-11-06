@@ -1,0 +1,157 @@
+import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+import shutil
+import sys
+from tempfile import TemporaryDirectory
+from threading import Thread
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from runtime.skills.compiler import PlanCompiler
+from runtime.execution.executor import PowerShellMissionExecutor
+from runtime.skills.registry import SkillRegistry
+from runtime.planning.validation import validate_plan
+
+
+class PowerShellUtf8Tests(unittest.TestCase):
+    def test_powershell_7_posts_chinese_side_name_as_utf8(self):
+        executable = shutil.which("pwsh")
+        if not executable:
+            self.skipTest("PowerShell 7 unavailable")
+
+        class Handler(BaseHTTPRequestHandler):
+            requests = []
+
+            def log_message(self, *_):
+                pass
+
+            def respond(self, data):
+                body = json.dumps({"code": 0, "data": data, "message": "succeed"},
+                                  ensure_ascii=False).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):
+                raw = self.rfile.read(int(self.headers["Content-Length"]))
+                body = json.loads(raw.decode("utf-8"))
+                self.requests.append((self.path, self.headers.get("Content-Type"), body))
+                if self.path.endswith("/ReferencePoint"):
+                    self.respond([f"10000000-0000-0000-0000-{index:012d}"
+                                  for index, _ in enumerate(body["Values"], 1)])
+                elif self.path.endswith("/ScenArea"):
+                    self.respond({"id": "20000000-0000-0000-0000-000000000001"})
+                elif body.get("type") == "createMission":
+                    self.respond({"id": "30000000-0000-0000-0000-000000000001"})
+                else:
+                    if body.get("type") == "PatrolMissionRules":
+                        self.server.last_otr = body["Rules"]["OTR"]
+                    self.respond({})
+
+            def do_GET(self):
+                self.respond({"patrolmissionData": {
+                    "PatrolArea": [1, 2, 3], "OTR": getattr(self.server, "last_otr", False)},
+                    "supportmissionData": {"area": [1, 2, 3]}})
+
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        except PermissionError:
+            self.skipTest("Loopback listener unavailable")
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            registry = SkillRegistry(ROOT / "skills").load()
+            situation = json.loads((ROOT / "examples" / "situation.example.json")
+                                   .read_text(encoding="utf-8"))
+            situation["units"]["army"].append({
+                "guid": "cccccccc-0000-0000-0000-000000000002",
+                "name": "蓝方机场", "unit_type": "Facility", "lat": 20.3, "lon": 130.3})
+            situation["api_base"] = f"http://127.0.0.1:{server.server_port}/ApiCtrl/api"
+            source_plan = json.loads((ROOT / "examples" / "plan.multiple.example.json")
+                                     .read_text(encoding="utf-8"))
+            call = source_plan["skill_calls"][0]
+            call["mission_name"] = "航母北侧战斗巡逻"
+            call["area"]["name"] = "航母北侧战斗巡逻-区域"
+            ship_call = json.loads(json.dumps(call))
+            ship_call.update({
+                "call_id": "ship-patrol",
+                "skill_id": "navy.sea_patrol",
+                "mission_name": "舰艇海上巡逻",
+                "unit_guids": ["bbbbbbbb-0000-0000-0000-000000000001"],
+            })
+            awacs_call = json.loads(json.dumps(call))
+            awacs_call.update({
+                "call_id": "awacs-airfield", "skill_id": "air.early_warning",
+                "mission_name": "机场近场预警",
+                "unit_guids": ["aaaaaaaa-0000-0000-0000-000000000004"],
+                "area": {"pattern": "racetrack"},
+            })
+            calls = validate_plan({"version": 1, "skill_calls": [call, ship_call, awacs_call]},
+                                  situation, registry)
+            with TemporaryDirectory(dir=ROOT) as folder:
+                invocation = PlanCompiler(registry, ROOT / "scripts" / "powershell",
+                                          folder).compile(calls, situation, "utf8")
+                results = PowerShellMissionExecutor(executable=executable).execute(
+                    invocation, dry_run=False)
+                for item in invocation:
+                    self.assertTrue(Path(str(item.report_path) + ".area.json").is_file())
+                situation["units"]["air"].append({
+                    "guid": "aaaaaaaa-0000-0000-0000-000000000005",
+                    "name": "E-2K预警机-2", "unit_type": "Aircraft", "lat": 20.3, "lon": 130.3})
+                mission_guid = "30000000-0000-0000-0000-000000000001"
+                area_guid = "20000000-0000-0000-0000-000000000001"
+                situation["existing_missions"] = [{
+                    "name": "机场近场预警", "guid": mission_guid,
+                    "skill_id": "air.early_warning", "unit_guids": awacs_call["unit_guids"],
+                    "area_center": {"lat": 20.3, "lon": 130.3}}]
+                situation["operational_rules"] = {"awacs_trigger": {
+                    "kind": "relief", "mission_name": "机场近场预警", "mission_guid": mission_guid,
+                    "unit_guid": awacs_call["unit_guids"][0],
+                    "replacement_guid": "aaaaaaaa-0000-0000-0000-000000000005",
+                    "area_guid": area_guid, "area_points": calls[-1].area["points"],
+                    "deployment": calls[-1].area["deployment"]}}
+                relief = {"call_id": "awacs-relief", "skill_id": "air.early_warning",
+                          "mission_name": "机场近场预警", "existing_mission_guid": mission_guid,
+                          "unit_guids": ["aaaaaaaa-0000-0000-0000-000000000005"],
+                          "area": {"pattern": "racetrack"},
+                          "parameters": {"relieved_unit_guid": awacs_call["unit_guids"][0]}}
+                relief_calls = validate_plan({"version": 1, "skill_calls": [relief]},
+                                             situation, registry)
+                relief_invocation = PlanCompiler(registry, ROOT / "scripts" / "powershell",
+                                                 folder).compile(relief_calls, situation, "relief")
+                PowerShellMissionExecutor(executable=executable).execute(
+                    relief_invocation, dry_run=False)
+            self.assertTrue(results[-1].success, results[-1].stderr)
+            area_posts = [item for item in Handler.requests if item[0].endswith("/ScenArea")]
+            self.assertEqual(len(area_posts), 3)
+            self.assertEqual(len(area_posts[-1][2]["area_points"]), 14)
+            self.assertTrue(all(item[2]["side"] == "蓝方" for item in area_posts))
+            self.assertTrue(all("charset=utf-8" in item[1].lower() for item in area_posts))
+            mission_posts = [item for item in Handler.requests
+                             if item[2].get("type") == "createMission"]
+            self.assertEqual(mission_posts[0][2]["createMission"]["name"],
+                             "航母北侧战斗巡逻")
+            patrol_rules = [item[2]["Rules"]["OTR"] for item in Handler.requests
+                            if item[2].get("type") == "PatrolMissionRules"]
+            self.assertEqual(patrol_rules, [True, False])
+            support_rules = [item[2]["Rules"] for item in Handler.requests
+                             if item[2].get("type") == "SupportMissionRules"]
+            self.assertEqual(len(support_rules), 2)
+            self.assertTrue(support_rules[0]["OTR"])
+            operations = [item[2]["type"] for item in Handler.requests
+                          if item[2].get("type") in ("UnAssignUnitToMission", "AssignUnitToMission")]
+            self.assertEqual(operations[-2:], ["UnAssignUnitToMission", "AssignUnitToMission"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+
+if __name__ == "__main__":
+    unittest.main()

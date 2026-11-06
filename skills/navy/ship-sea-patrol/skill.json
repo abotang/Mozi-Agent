@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "skill_id": "navy.sea_patrol",
+  "service": "navy",
+  "display_name": "舰艇海上巡逻",
+  "description": "为蓝方水面舰艇创建海上巡逻任务，可附带出航和区内航线。",
+  "task_key": "shipSeaPatrol",
+  "script": "06-舰艇海上巡逻.ps1",
+  "mission_type": "Patrol",
+  "classify": "SUR_SEA",
+  "unit_types": ["Ship", "舰艇"],
+  "requires_area": true,
+  "area_type_id": "413",
+  "requires_target": false,
+  "target_kind": "Ship",
+  "supports_escort": false,
+  "supports_loadout": false,
+  "supports_routes": true,
+  "rules": ["仅在本想定首次规划时创建，后续不再新建舰艇巡逻", "必须划定海上巡逻区", "巡逻区不是航线", "航线可选且新航线至少2点", "不选择打击目标"]
+}

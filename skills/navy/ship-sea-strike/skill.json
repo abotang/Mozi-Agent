@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "skill_id": "navy.sea_strike",
+  "service": "navy",
+  "display_name": "舰艇对海攻击",
+  "description": "为蓝方水面舰艇创建对已探测水面舰艇接触的打击任务。",
+  "task_key": "shipSeaStrike",
+  "script": "07-舰艇对海攻击.ps1",
+  "mission_type": "Strike",
+  "classify": "SEA",
+  "unit_types": ["Ship", "舰艇"],
+  "requires_area": false,
+  "area_type_id": null,
+  "requires_target": true,
+  "target_kind": "Ship",
+  "supports_escort": false,
+  "supports_loadout": false,
+  "supports_routes": false,
+  "rules": ["目标必须是蓝方当前水面 contact GUID", "没有已探测舰艇时不得创建", "打击任务不划巡逻区"]
+}

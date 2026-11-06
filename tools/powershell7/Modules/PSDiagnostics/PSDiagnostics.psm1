@@ -1,0 +1,661 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+<#
+  PowerShell Diagnostics Module
+  This module contains a set of wrapper scripts that
+  enable a user to use ETW tracing in PowerShell 7.
+ #>
+
+$script:windir = [System.Environment]::GetEnvironmentVariable("windir", [System.EnvironmentVariableTarget]::Machine)
+
+$script:Logman = "${script:windir}\system32\logman.exe"
+$script:wsmanlogfile = "${script:windir}\system32\wsmtraces.log"
+$script:wsmprovfile = "${script:windir}\system32\wsmtraceproviders.txt"
+$script:wsmsession = "wsmlog"
+$script:pssession = "PSTrace"
+$script:psprovidername = "PowerShellCore"
+$script:wsmprovidername = "Microsoft-Windows-WinRM"
+$script:oplog = "/Operational"
+$script:analyticlog = "/Analytic"
+$script:debuglog = "/Debug"
+$script:wevtutil = "${script:windir}\system32\wevtutil.exe"
+$script:slparam = "sl"
+$script:glparam = "gl"
+
+function Start-Trace
+{
+    Param(
+    [Parameter(Mandatory=$true,
+               Position=0)]
+    [string]
+    $SessionName,
+    [Parameter(Position=1)]
+    [ValidateNotNullOrEmpty()]
+    [string]
+    $OutputFilePath,
+    [Parameter(Position=2)]
+    [ValidateNotNullOrEmpty()]
+    [string]
+    $ProviderFilePath,
+    [Parameter()]
+    [Switch]
+    $ETS,
+    [Parameter()]
+    [ValidateSet("bin", "bincirc", "csv", "tsv", "sql")]
+    $Format,
+    [Parameter()]
+    [int]
+    $MinBuffers=0,
+    [Parameter()]
+    [int]
+    $MaxBuffers=256,
+    [Parameter()]
+    [int]
+    $BufferSizeInKB = 0,
+    [Parameter()]
+    [int]
+    $MaxLogFileSizeInMB=0
+    )
+
+    Process
+    {
+        $executestring = " start $SessionName"
+
+        if ($ETS)
+        {
+            $executestring += " -ets"
+        }
+
+        if ($null -ne $OutputFilePath)
+        {
+            $executestring += " -o ""$OutputFilePath"""
+        }
+
+        if ($null -ne $ProviderFilePath)
+        {
+            $executestring += " -pf ""$ProviderFilePath"""
+        }
+
+        if ($null -ne $Format)
+        {
+            $executestring += " -f $Format"
+        }
+
+        if ($MinBuffers -ne 0 -or $MaxBuffers -ne 256)
+        {
+            $executestring += " -nb $MinBuffers $MaxBuffers"
+        }
+
+        if ($BufferSizeInKB -ne 0)
+        {
+            $executestring += " -bs $BufferSizeInKB"
+        }
+
+        if ($MaxLogFileSizeInMB -ne 0)
+        {
+            $executestring += " -max $MaxLogFileSizeInMB"
+        }
+
+        & $script:Logman $executestring.Split(" ")
+    }
+}
+
+function Stop-Trace
+{
+    param(
+    [Parameter(Mandatory=$true,
+               Position=0)]
+    $SessionName,
+    [Parameter()]
+    [switch]
+    $ETS
+    )
+
+    Process
+    {
+        if ($ETS)
+        {
+            & $script:Logman update $SessionName -ets
+            & $script:Logman stop $SessionName -ets
+        }
+        else
+        {
+            & $script:Logman update $SessionName
+            & $script:Logman stop $SessionName
+        }
+    }
+}
+
+function Enable-WSManTrace
+{
+
+    # winrm
+    "{04c6e16d-b99f-4a3a-9b3e-b8325bbc781e} 0xffffffff 0xff" | Out-File $script:wsmprovfile -Encoding ascii
+
+    # winrsmgr
+    "{c0a36be8-a515-4cfa-b2b6-2676366efff7} 0xffffffff 0xff" | Out-File $script:wsmprovfile -Encoding ascii -Append
+
+    # WinrsExe
+    "{f1cab2c0-8beb-4fa2-90e1-8f17e0acdd5d} 0xffffffff 0xff" | Out-File $script:wsmprovfile -Encoding ascii -Append
+
+    # WinrsCmd
+    "{03992646-3dfe-4477-80e3-85936ace7abb} 0xffffffff 0xff" | Out-File $script:wsmprovfile -Encoding ascii -Append
+
+    # IPMIPrv
+    "{651d672b-e11f-41b7-add3-c2f6a4023672} 0xffffffff 0xff" | Out-File $script:wsmprovfile -Encoding ascii -Append
+
+    #IpmiDrv
+    "{D5C6A3E9-FA9C-434e-9653-165B4FC869E4} 0xffffffff 0xff" | Out-File $script:wsmprovfile -Encoding ascii -Append
+
+    # WSManProvHost
+    "{6e1b64d7-d3be-4651-90fb-3583af89d7f1} 0xffffffff 0xff" | Out-File $script:wsmprovfile -Encoding ascii -Append
+
+    # Event Forwarding
+    "{6FCDF39A-EF67-483D-A661-76D715C6B008} 0xffffffff 0xff" | Out-File $script:wsmprovfile -Encoding ascii -Append
+
+    Start-Trace -SessionName $script:wsmsession -ETS -OutputFilePath $script:wsmanlogfile -Format bincirc -MinBuffers 16 -MaxBuffers 256 -BufferSizeInKB 64 -MaxLogFileSizeInMB 256 -ProviderFilePath $script:wsmprovfile
+}
+
+function Disable-WSManTrace
+{
+    Stop-Trace $script:wsmsession -ETS
+}
+
+function Enable-PSWSManCombinedTrace
+{
+    param (
+        [switch] $DoNotOverwriteExistingTrace
+    )
+
+    $provfile = [io.path]::GetTempFilename()
+
+    if ($DoNotOverwriteExistingTrace) {
+        $fileName = [string][guid]::newguid()
+        $logfile = $PSHOME + "\\Traces\\PSTrace_$fileName.etl"
+    } else {
+        $logfile = $PSHOME + "\\Traces\\PSTrace.etl"
+    }
+
+    "$script:psprovidername 0 5" | Out-File $provfile -Encoding ascii
+    "$script:wsmprovidername 0 5" | Out-File $provfile -Encoding ascii -Append
+
+    if (!(Test-Path $PSHOME\Traces))
+    {
+        New-Item -ItemType Directory -Force $PSHOME\Traces | Out-Null
+    }
+
+    if (Test-Path $logfile)
+    {
+        Remove-Item -Force $logfile | Out-Null
+    }
+
+    Start-Trace -SessionName $script:pssession -OutputFilePath $logfile -ProviderFilePath $provfile -ETS
+
+    Remove-Item $provfile -Force -ErrorAction SilentlyContinue
+}
+
+function Disable-PSWSManCombinedTrace
+{
+    Stop-Trace -SessionName $script:pssession -ETS
+}
+
+function Set-LogProperties
+{
+    param(
+        [Parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true)]
+        [Microsoft.PowerShell.Diagnostics.LogDetails]
+        $LogDetails,
+        [switch] $Force
+     )
+
+    Process
+    {
+        if ($LogDetails.AutoBackup -and !$LogDetails.Retention)
+        {
+            throw (New-Object System.InvalidOperationException)
+        }
+
+        $enabled = $LogDetails.Enabled.ToString()
+        $retention = $LogDetails.Retention.ToString()
+        $autobackup = $LogDetails.AutoBackup.ToString()
+        $maxLogSize = $LogDetails.MaxLogSize.ToString()
+        $osVersion = [Version] (Get-CimInstance Win32_OperatingSystem).Version
+
+        if (($LogDetails.Type -eq "Analytic") -or ($LogDetails.Type -eq "Debug"))
+        {
+            if ($LogDetails.Enabled)
+            {
+                if($osVersion -lt 6.3.7600)
+                {
+                    & $script:wevtutil $script:slparam $LogDetails.Name -e:$Enabled
+                }
+                else
+                {
+                    & $script:wevtutil /q:$Force $script:slparam $LogDetails.Name -e:$Enabled
+                }
+            }
+            else
+            {
+                if($osVersion -lt 6.3.7600)
+                {
+                    & $script:wevtutil $script:slparam $LogDetails.Name -e:$Enabled -rt:$Retention -ms:$MaxLogSize
+                }
+                else
+                {
+                    & $script:wevtutil /q:$Force $script:slparam $LogDetails.Name -e:$Enabled -rt:$Retention -ms:$MaxLogSize
+                }
+            }
+        }
+        else
+        {
+            if($osVersion -lt 6.3.7600)
+            {
+                & $script:wevtutil $script:slparam $LogDetails.Name -e:$Enabled -rt:$Retention -ab:$AutoBackup -ms:$MaxLogSize
+            }
+            else
+            {
+                & $script:wevtutil /q:$Force $script:slparam $LogDetails.Name -e:$Enabled -rt:$Retention -ab:$AutoBackup -ms:$MaxLogSize
+            }
+        }
+    }
+}
+
+function ConvertTo-Bool([string]$value)
+{
+    if ($value -ieq "true")
+    {
+        return $true
+    }
+    else
+    {
+        return $false
+    }
+}
+
+function Get-LogProperties
+{
+    param(
+        [Parameter(Mandatory=$true, ValueFromPipeline=$true, Position=0)] $Name
+    )
+
+    Process
+    {
+        $details = & $script:wevtutil $script:glparam $Name
+        $indexes = @(1,2,8,9,10)
+        $value = @()
+        foreach($index in $indexes)
+        {
+            $value += @(($details[$index].SubString($details[$index].IndexOf(":")+1)).Trim())
+        }
+
+        $enabled = ConvertTo-Bool $value[0]
+        $retention = ConvertTo-Bool $value[2]
+        $autobackup = ConvertTo-Bool $value[3]
+
+        New-Object Microsoft.PowerShell.Diagnostics.LogDetails $Name, $enabled, $value[1], $retention, $autobackup, $value[4]
+    }
+}
+
+function Enable-PSTrace
+{
+    param(
+        [switch] $Force,
+		[switch] $AnalyticOnly
+     )
+
+    $Properties = Get-LogProperties ($script:psprovidername + $script:analyticlog)
+
+	if (!$Properties.Enabled) {
+		$Properties.Enabled = $true
+		if ($Force) {
+			Set-LogProperties $Properties -Force
+		} else {
+			Set-LogProperties $Properties
+		}
+	}
+
+	if (!$AnalyticOnly) {
+		$Properties = Get-LogProperties ($script:psprovidername + $script:debuglog)
+		if (!$Properties.Enabled) {
+			$Properties.Enabled = $true
+			if ($Force) {
+				Set-LogProperties $Properties -Force
+			} else {
+				Set-LogProperties $Properties
+			}
+		}
+	}
+}
+
+function Disable-PSTrace
+{
+    param(
+		[switch] $AnalyticOnly
+     )
+    $Properties = Get-LogProperties ($script:psprovidername + $script:analyticlog)
+	if ($Properties.Enabled) {
+		$Properties.Enabled = $false
+		Set-LogProperties $Properties
+	}
+
+	if (!$AnalyticOnly) {
+		$Properties = Get-LogProperties ($script:psprovidername + $script:debuglog)
+		if ($Properties.Enabled) {
+			$Properties.Enabled = $false
+			Set-LogProperties $Properties
+		}
+	}
+}
+Add-Type @"
+using System;
+
+namespace Microsoft.PowerShell.Diagnostics
+{
+    public class LogDetails
+    {
+        public string Name
+        {
+            get
+            {
+                return name;
+            }
+        }
+        private string name;
+
+        public bool Enabled
+        {
+            get
+            {
+                return enabled;
+            }
+            set
+            {
+                enabled = value;
+            }
+        }
+        private bool enabled;
+
+        public string Type
+        {
+            get
+            {
+                return type;
+            }
+        }
+        private string type;
+
+        public bool Retention
+        {
+            get
+            {
+                return retention;
+            }
+            set
+            {
+                retention = value;
+            }
+        }
+        private bool retention;
+
+        public bool AutoBackup
+        {
+            get
+            {
+                return autoBackup;
+            }
+            set
+            {
+                autoBackup = value;
+            }
+        }
+        private bool autoBackup;
+
+        public int MaxLogSize
+        {
+            get
+            {
+                return maxLogSize;
+            }
+            set
+            {
+                maxLogSize = value;
+            }
+        }
+        private int maxLogSize;
+
+        public LogDetails(string name, bool enabled, string type, bool retention, bool autoBackup, int maxLogSize)
+        {
+            this.name = name;
+            this.enabled = enabled;
+            this.type = type;
+            this.retention = retention;
+            this.autoBackup = autoBackup;
+            this.maxLogSize = maxLogSize;
+        }
+    }
+}
+"@
+
+if (Get-Command logman.exe -Type Application -ErrorAction SilentlyContinue)
+{
+    Export-ModuleMember Disable-PSTrace, Disable-PSWSManCombinedTrace, Disable-WSManTrace, Enable-PSTrace, Enable-PSWSManCombinedTrace, Enable-WSManTrace, Get-LogProperties, Set-LogProperties, Start-Trace, Stop-Trace
+}
+else
+{
+    # Currently we only support these cmdlets as logman.exe is not available on systems like Nano and IoT
+    Export-ModuleMember Disable-PSTrace, Enable-PSTrace, Get-LogProperties, Set-LogProperties
+}
+
+# SIG # Begin signature block
+# MIInUAYJKoZIhvcNAQcCoIInQTCCJz0CAQExDzANBglghkgBZQMEAgEFADB5Bgor
+# BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
+# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCD1N/xHqyvxifWM
+# OnpqvYLlOQ8CEvdsrM6YinKwYeiecqCCDMkwggYEMIID7KADAgECAhMzAAACHPrN
+# xZvoL37EAAAAAAIcMA0GCSqGSIb3DQEBCwUAMFcxCzAJBgNVBAYTAlVTMR4wHAYD
+# VQQKExVNaWNyb3NvZnQgQ29ycG9yYXRpb24xKDAmBgNVBAMTH01pY3Jvc29mdCBD
+# b2RlIFNpZ25pbmcgUENBIDIwMjQwHhcNMjYwNDE2MTg1OTQxWhcNMjcwNDE1MTg1
+# OTQxWjB0MQswCQYDVQQGEwJVUzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UE
+# BxMHUmVkbW9uZDEeMBwGA1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMR4wHAYD
+# VQQDExVNaWNyb3NvZnQgQ29ycG9yYXRpb24wggEiMA0GCSqGSIb3DQEBAQUAA4IB
+# DwAwggEKAoIBAQDVsZfgOKmM31HPfoWOoNEiw0SlCiIxUMC0I9NMWbucKOw/e9lP
+# oAoehQVu6SG65V4EPzrYsnBnFPNoi4/HoOdjhz1qkrEt4I6tEcxXU6oOeY9zGveC
+# /3iBeuhLYxM3M/PkcUoebF+Nednm8OkdSPoDu8imViHPQq/8CQUu0WRR4rE+dMRf
+# rpVqfmNi2qWCX94T4MsepijGVkwE//tJg0ryAiYdHT34LSnlG/RSBZmQRGWZ5g8j
+# qnKjRParSqMft1gvjuUTVgtWNZfgcLFSK5Wa0myrq8OPcgTGGsRgun+tnSS+IxDT
+# xVsAPH1OzvPjwomguByhUe/OcvUN0D5Wmp7xAgMBAAGjggGqMIIBpjAOBgNVHQ8B
+# Af8EBAMCB4AwHwYDVR0lBBgwFgYKKwYBBAGCN0wIAQYIKwYBBQUHAwMwHQYDVR0O
+# BBYEFNoH7a2YDjOSwpkp6DHcmUS7J+0yMFQGA1UdEQRNMEukSTBHMS0wKwYDVQQL
+# EyRNaWNyb3NvZnQgSXJlbGFuZCBPcGVyYXRpb25zIExpbWl0ZWQxFjAUBgNVBAUT
+# DTIzMDAxMis1MDc1NjkwHwYDVR0jBBgwFoAUf1k/VCHarU/vBeXmo9ctBpQSCDEw
+# YAYDVR0fBFkwVzBVoFOgUYZPaHR0cDovL3d3dy5taWNyb3NvZnQuY29tL3BraW9w
+# cy9jcmwvTWljcm9zb2Z0JTIwQ29kZSUyMFNpZ25pbmclMjBQQ0ElMjAyMDI0LmNy
+# bDBtBggrBgEFBQcBAQRhMF8wXQYIKwYBBQUHMAKGUWh0dHA6Ly93d3cubWljcm9z
+# b2Z0LmNvbS9wa2lvcHMvY2VydHMvTWljcm9zb2Z0JTIwQ29kZSUyMFNpZ25pbmcl
+# MjBQQ0ElMjAyMDI0LmNydDAMBgNVHRMBAf8EAjAAMA0GCSqGSIb3DQEBCwUAA4IC
+# AQAUnEqhaRXe0T3hIJjvdQErEkrA/7bByjn6t5IArODkkRjzkYwtKMc2yYj2quaN
+# rLutWw2YZcngKPy1b71YyDJQTy4NDRwaSh9Tw5thrk3NmcPrAHia5vtcBJ1CgtKK
+# 7mQbIcQ22d/N3813ayCDDFewu1+jsZmX+r/aTEqaOM4TVxVtRSkuCy8nAXKuChOK
+# Li/zA4XuH8iEYqIsj2YoNaeSxVmeGiERXpKdo3dDmYi0kO5w2D8VS4c3+9h6gElY
+# BaAAg/dYErBg27qT3vv0zRDJhJufvCNylA8S7/+8H5E/PV5cng6na9VV/w9OV3qu
+# uND6zdGa2EX38Glp50F9AIQk3p2xXmcvorDeM4XJ7UlWYBi6g80J1SSOQnInCYFE
+# msfUNn3+1AaTJKSJL83quKArTac2pKhu0Yzzzrzo6HrsRiQKzpnRBb1/dMa6P3hz
+# 75XbMRBctNsFhZC07WCmjExdLg2eHW5uV0TY8D5+6wozJf7vF3+WHkYPO85Z+BC6
+# U4FkNbYNycZ9cE4j1tXRdyDCfml6c0HWPHjNVDObrv9lKt3qUqFpX38VCqVCyNOO
+# 1UcXfQiVjJw32U2WUKZjt/neJKHEBsm9kFsLuWzkQ53+qcaSaytmsCnk2gOglrlD
+# 5d3kKyvvAw+rzm0lT8K38P6PLxfZQHhu4W8dV7Av8N2ZmDCCBr0wggSloAMCAQIC
+# EzMAAAA5O7Y3Gb8GHWcAAAAAADkwDQYJKoZIhvcNAQEMBQAwgYgxCzAJBgNVBAYT
+# AlVTMRMwEQYDVQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRtb25kMR4wHAYD
+# VQQKExVNaWNyb3NvZnQgQ29ycG9yYXRpb24xMjAwBgNVBAMTKU1pY3Jvc29mdCBS
+# b290IENlcnRpZmljYXRlIEF1dGhvcml0eSAyMDExMB4XDTI0MDgwODIwNTQxOFoX
+# DTM2MDMyMjIyMTMwNFowVzELMAkGA1UEBhMCVVMxHjAcBgNVBAoTFU1pY3Jvc29m
+# dCBDb3Jwb3JhdGlvbjEoMCYGA1UEAxMfTWljcm9zb2Z0IENvZGUgU2lnbmluZyBQ
+# Q0EgMjAyNDCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBANgBnB7jOMeq
+# lRYHNa265v4IY9fH8TKhemHfPINe1gpLaV3dhg324WwH06LcHbpnsBukCDNitryo
+# 0dtS/EW6I/yEL/bLSY8hKpbfQuWusBPr9qazYcDxCW/qnjb5JsI1s8bNOg3bVATv
+# QVL4tcf03aTycsz8QeCdM0l/yHRObJ9QqazM1r6VPEOJ7LL+uEEb73w6QCuhs89a
+# 1uv1zerOYMnsneRRwCbpyW11IcggU0cRKDDq1pjVJzIbIF6+oiXXbReOsgeI8zu1
+# FyQfK0fVkaya8SmVHQ/tOf23mZ4W9k0Ri22QW9p3UgSC5OUDktKxxcCmGL6tXLfO
+# GSWHIIV4YrTJTT6PNty5REojHJuZHArkF9VnHTERWoTjAzfI3kP+5b4alUdhgAZ7
+# ttOu1bVnXfHaqPYl2rPs20ji03LOVWsh/radgE17es5hL+t6lV0eVHrVhsssROWJ
+# uz2MXMCt7iw7lFPG9LXKGjsmonn2gotGdHIuEg5JnJMJVmixd5LRlkmgYRZKzhxS
+# CwyoGIq0PhaA7Y+VPct5pCHkijcIIDm0nlkK+0KyepolcqGm0T/GYQRMhHJlGOOm
+# VQop36wUVUYklUy++vDWeEgEo4s7hxN6mIbf2MSIQ/iIfMZgJxC69oukMUXCrOC3
+# SkE/xIkgpfl22MM1itkZ35nNXkMolU1lAgMBAAGjggFOMIIBSjAOBgNVHQ8BAf8E
+# BAMCAYYwEAYJKwYBBAGCNxUBBAMCAQAwHQYDVR0OBBYEFH9ZP1Qh2q1P7wXl5qPX
+# LQaUEggxMBkGCSsGAQQBgjcUAgQMHgoAUwB1AGIAQwBBMA8GA1UdEwEB/wQFMAMB
+# Af8wHwYDVR0jBBgwFoAUci06AjGQQ7kUBU7h6qfHMdEjiTQwWgYDVR0fBFMwUTBP
+# oE2gS4ZJaHR0cDovL2NybC5taWNyb3NvZnQuY29tL3BraS9jcmwvcHJvZHVjdHMv
+# TWljUm9vQ2VyQXV0MjAxMV8yMDExXzAzXzIyLmNybDBeBggrBgEFBQcBAQRSMFAw
+# TgYIKwYBBQUHMAKGQmh0dHA6Ly93d3cubWljcm9zb2Z0LmNvbS9wa2kvY2VydHMv
+# TWljUm9vQ2VyQXV0MjAxMV8yMDExXzAzXzIyLmNydDANBgkqhkiG9w0BAQwFAAOC
+# AgEAFJQfOChP7onn6fLIMKrSlN1WYKwDFgAddymOUO3FrM8d7B/W/iQ6DxXsDn7D
+# 5W4wMwYeLystcEqfkjz4NURRgazyMu5yRzQh4LqjA4tStTcJh1opExo7nn5PuPBY
+# nbu0+THSuVHTe0VTTPVhily/piFrDo3axQ9P4C+Ol5yet+2gTfekICS5xS+cYfSI
+# vgn0JksVBVMYVI5QFu/qhnLhsEFEUzG8fvv0hjgkO+lkpV9ty6GkN4vdnd7ya6Q6
+# aR9y34aiM1qmxaxBi6OUnyNl6fkuun/diTFnYDLTppOkr/mg5WSfCiDVMNCxtj4w
+# PKC5OmHm1DQIt/MNokbbH3UGsFP1QbzsLocuSqLCvH09Io3fDPTmscR9Y75G4qX7
+# RTX8AdBPo0I6OEojf39zuFZt0qOHm65YWQE69cZM2ueE1MB05dNNgHK9gTE7zKvK
+# /fg8B2qjW88MT/WF5V5uvZGtqa9FSL2RazArA+rDPuf6JGYz4HpgMZHB4S6szWSK
+# YBv0VisCzfxgeU+dquXW9bd0auYlOB58DPcOYKdc3Se94g+xL4pcEhbB54JOgAkw
+# YTu/9dLeH2pDqeJZAABVDWRQCaXfO5LgyKwKCLYXpigrZYCjUSBcr+Ve8PFWMhVT
+# Ql0v4q8J/AUmQN5W4n101cY2L4A7GTQG1h32HHAvfQESWP0xghndMIIZ2QIBATBu
+# MFcxCzAJBgNVBAYTAlVTMR4wHAYDVQQKExVNaWNyb3NvZnQgQ29ycG9yYXRpb24x
+# KDAmBgNVBAMTH01pY3Jvc29mdCBDb2RlIFNpZ25pbmcgUENBIDIwMjQCEzMAAAIc
+# +s3Fm+gvfsQAAAAAAhwwDQYJYIZIAWUDBAIBBQCggZAwGQYJKoZIhvcNAQkDMQwG
+# CisGAQQBgjcCAQQwLwYJKoZIhvcNAQkEMSIEIFmJjkOHA8LpNjOjiyWRffMk9Vin
+# EtkX++kJerrkV5IQMEIGCisGAQQBgjcCAQwxNDAyoBSAEgBNAGkAYwByAG8AcwBv
+# AGYAdKEagBhodHRwOi8vd3d3Lm1pY3Jvc29mdC5jb20wDQYJKoZIhvcNAQEBBQAE
+# ggEAZElLRsXqlD0t8h8FtJ74Ffy0YVTQeKQbkwp70w1CKU7op1d7i7i97v0OT3/y
+# 2gXO2SWrMS31GVWuwrwaT8cYqaTqHcVHDkZFWk13swg5hxVMtwVVmMabOZ475BJV
+# gFeLl0QTu29QQkmNKzvW+innuf9VVuv4o9SAp+WFx4QFt07vkP6B9jqKZ/FU28zD
+# 7B4z2f/aF2yjZWkp47uTMsJ0k1xxBJ9fQfdXTrAE5ZT4yjRyGzVAtJ69tkPm1X5S
+# 8psf5SdZyyoeupe7npNdVXjvHK3U8xNIVCX9zp3mgv4HeL7hMP9gFO3cMJt3e0Ma
+# AXbGSHADLq6rFhFbf/s2IzpVdaGCF60wghepBgorBgEEAYI3AwMBMYIXmTCCF5UG
+# CSqGSIb3DQEHAqCCF4YwgheCAgEDMQ8wDQYJYIZIAWUDBAIBBQAwggFaBgsqhkiG
+# 9w0BCRABBKCCAUkEggFFMIIBQQIBAQYKKwYBBAGEWQoDATAxMA0GCWCGSAFlAwQC
+# AQUABCDfChSksrIHgVRWGBpykgBoT6o8y/60kWVy1hCNgpp3lQIGatvv0VNDGBMy
+# MDI2MTAyNTAyMDYxNi4xMjRaMASAAgH0oIHZpIHWMIHTMQswCQYDVQQGEwJVUzET
+# MBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwGA1UEChMV
+# TWljcm9zb2Z0IENvcnBvcmF0aW9uMS0wKwYDVQQLEyRNaWNyb3NvZnQgSXJlbGFu
+# ZCBPcGVyYXRpb25zIExpbWl0ZWQxJzAlBgNVBAsTHm5TaGllbGQgVFNTIEVTTjoy
+# RDFBLTA1RTAtRDk0NzElMCMGA1UEAxMcTWljcm9zb2Z0IFRpbWUtU3RhbXAgU2Vy
+# dmljZaCCEfswggcoMIIFEKADAgECAhMzAAACEtEIBjzKGE+qAAEAAAISMA0GCSqG
+# SIb3DQEBCwUAMHwxCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpXYXNoaW5ndG9uMRAw
+# DgYDVQQHEwdSZWRtb25kMR4wHAYDVQQKExVNaWNyb3NvZnQgQ29ycG9yYXRpb24x
+# JjAkBgNVBAMTHU1pY3Jvc29mdCBUaW1lLVN0YW1wIFBDQSAyMDEwMB4XDTI1MDgx
+# NDE4NDgxNVoXDTI2MTExMzE4NDgxNVowgdMxCzAJBgNVBAYTAlVTMRMwEQYDVQQI
+# EwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRtb25kMR4wHAYDVQQKExVNaWNyb3Nv
+# ZnQgQ29ycG9yYXRpb24xLTArBgNVBAsTJE1pY3Jvc29mdCBJcmVsYW5kIE9wZXJh
+# dGlvbnMgTGltaXRlZDEnMCUGA1UECxMeblNoaWVsZCBUU1MgRVNOOjJEMUEtMDVF
+# MC1EOTQ3MSUwIwYDVQQDExxNaWNyb3NvZnQgVGltZS1TdGFtcCBTZXJ2aWNlMIIC
+# IjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAr0zToDkpWQtsZekS0cV0quDd
+# KSTGkovvBaZH0OAIEi0O3CcO77JiX8c4Epq9uibHVZZ1W/LoufE172vkRXO+QYNt
+# WWorECJ2AcZQ10bpAltkhZNiXlVJ8L3QzhKgrXrmMkm2J+/g81U23JPcO4wXHEft
+# onT3wpd//936rjmwxMm7NkbsygbJf+4AVBMNr4aMPQhBd76od0KMB6WrvyEGOOU0
+# 893OFufS5EDey4n44WgaxJE0Vnv3/OOvuOw5Kp1KPqjjYJ+L9ywLuBMtcDfLpNQO
+# /h1eFEoMrbiEM67TOfNlXfxbDz4MlsYvLioxgd2Xzey1QxrV1+i+JyVDJMiSe9gK
+# OuzpiQQFE19DUPgsidyjLTzXEhSVLBlRor0eCVf7gC6Rfk8NY3rO2sggOL79vU5F
+# uDKTh/sIOtcUHeHC42jBGB+tfdKC1KOBR+UlN9aOzg8mpUNI2FgqQvirVP9ppbeM
+# Ufvp2wA9voyTiRWvDgzCxo8xlJ1nscYTHIQrmkF9j/Ca0IDmt8fvOn64nnlJOGUY
+# ZYHMC1l0xtgkYTE1ESUqqkawKk7iqbxdnLyycS+dR+zaxPudMDLrQFz8lgfy9obk
+# 0D8HC2dzhWpYNn5hdkoPEzgCqQUOp8v3Qj/sd4anyupe5KoCkjABOP3yhSQ4W9Z+
+# DrJnhM/rbsXC7oTv26cCAwEAAaOCAUkwggFFMB0GA1UdDgQWBBRSBblSxb5cYKYO
+# wvd/VfoXOfu33jAfBgNVHSMEGDAWgBSfpxVdAF5iXYP05dJlpxtTNRnpcjBfBgNV
+# HR8EWDBWMFSgUqBQhk5odHRwOi8vd3d3Lm1pY3Jvc29mdC5jb20vcGtpb3BzL2Ny
+# bC9NaWNyb3NvZnQlMjBUaW1lLVN0YW1wJTIwUENBJTIwMjAxMCgxKS5jcmwwbAYI
+# KwYBBQUHAQEEYDBeMFwGCCsGAQUFBzAChlBodHRwOi8vd3d3Lm1pY3Jvc29mdC5j
+# b20vcGtpb3BzL2NlcnRzL01pY3Jvc29mdCUyMFRpbWUtU3RhbXAlMjBQQ0ElMjAy
+# MDEwKDEpLmNydDAMBgNVHRMBAf8EAjAAMBYGA1UdJQEB/wQMMAoGCCsGAQUFBwMI
+# MA4GA1UdDwEB/wQEAwIHgDANBgkqhkiG9w0BAQsFAAOCAgEAXnSAkmX79Rc7lxS1
+# wOozXJ7V0ou5DntVcOJplIkDjvEN8BIQph4U+gSOLZuVReP/z9YdUiUkcPwL1PM2
+# 45/kEX1EegpxNc8HDA6hKCHg0ALNEcuxnGOlgKLokXfUer1D5hiW8PABM9R+neit
+# eTgPaaRlJFvGTYvotc0uqGiES5hMQhL8RNFhpS9RcIWHtnQGEnrdOUvCAhs4FeVi
+# awcmLTKv+1870c/MeTHi0QDdeR+7/Wg4qhkJ2k1iEHJdmYf8rIV0NRBZcdRTTdHe
+# e35SXP5neNCfAkjDIuZycRud6jzPLCNLiNYzGXBswzJygj4EeSORT7wMvaFuKeRA
+# XoXC3wwYvgIsI1zn3DGY625Y+yZSi8UNSNHuri36Zv9a+Q4vJwDpYK36S0TB2pf7
+# xLiiH32nk7YK73Rg98W6fZ2INuzYzZ7Ghgvfffkj4EUXg1E0EffY1pEqkbpDTP7h
+# /DBqtzoPXsyw2MUh+7yvWcq2BGZSuca6CY6X4ioMuc5PWpsmvOOli7ARNA7Ab8kK
+# dCc2gNDLacglsweZEc9/VQB6hls/b6Kk32nkwuHExKlaeoSVrKB5U9xlp1+c8J/7
+# GJj4Rw7AiQ8tcp+WmfyD8KxX2QlKbDi4SUjnglv4617R8+a/cDWJyaMt8279Wn7f
+# 2yMedN7kfGIQ5SZj66RdhdlZOq8wggdxMIIFWaADAgECAhMzAAAAFcXna54Cm0mZ
+# AAAAAAAVMA0GCSqGSIb3DQEBCwUAMIGIMQswCQYDVQQGEwJVUzETMBEGA1UECBMK
+# V2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwGA1UEChMVTWljcm9zb2Z0
+# IENvcnBvcmF0aW9uMTIwMAYDVQQDEylNaWNyb3NvZnQgUm9vdCBDZXJ0aWZpY2F0
+# ZSBBdXRob3JpdHkgMjAxMDAeFw0yMTA5MzAxODIyMjVaFw0zMDA5MzAxODMyMjVa
+# MHwxCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdS
+# ZWRtb25kMR4wHAYDVQQKExVNaWNyb3NvZnQgQ29ycG9yYXRpb24xJjAkBgNVBAMT
+# HU1pY3Jvc29mdCBUaW1lLVN0YW1wIFBDQSAyMDEwMIICIjANBgkqhkiG9w0BAQEF
+# AAOCAg8AMIICCgKCAgEA5OGmTOe0ciELeaLL1yR5vQ7VgtP97pwHB9KpbE51yMo1
+# V/YBf2xK4OK9uT4XYDP/XE/HZveVU3Fa4n5KWv64NmeFRiMMtY0Tz3cywBAY6GB9
+# alKDRLemjkZrBxTzxXb1hlDcwUTIcVxRMTegCjhuje3XD9gmU3w5YQJ6xKr9cmmv
+# Haus9ja+NSZk2pg7uhp7M62AW36MEBydUv626GIl3GoPz130/o5Tz9bshVZN7928
+# jaTjkY+yOSxRnOlwaQ3KNi1wjjHINSi947SHJMPgyY9+tVSP3PoFVZhtaDuaRr3t
+# pK56KTesy+uDRedGbsoy1cCGMFxPLOJiss254o2I5JasAUq7vnGpF1tnYN74kpEe
+# HT39IM9zfUGaRnXNxF803RKJ1v2lIH1+/NmeRd+2ci/bfV+AutuqfjbsNkz2K26o
+# ElHovwUDo9Fzpk03dJQcNIIP8BDyt0cY7afomXw/TNuvXsLz1dhzPUNOwTM5TI4C
+# vEJoLhDqhFFG4tG9ahhaYQFzymeiXtcodgLiMxhy16cg8ML6EgrXY28MyTZki1ug
+# poMhXV8wdJGUlNi5UPkLiWHzNgY1GIRH29wb0f2y1BzFa/ZcUlFdEtsluq9QBXps
+# xREdcu+N+VLEhReTwDwV2xo3xwgVGD94q0W29R6HXtqPnhZyacaue7e3PmriLq0C
+# AwEAAaOCAd0wggHZMBIGCSsGAQQBgjcVAQQFAgMBAAEwIwYJKwYBBAGCNxUCBBYE
+# FCqnUv5kxJq+gpE8RjUpzxD/LwTuMB0GA1UdDgQWBBSfpxVdAF5iXYP05dJlpxtT
+# NRnpcjBcBgNVHSAEVTBTMFEGDCsGAQQBgjdMg30BATBBMD8GCCsGAQUFBwIBFjNo
+# dHRwOi8vd3d3Lm1pY3Jvc29mdC5jb20vcGtpb3BzL0RvY3MvUmVwb3NpdG9yeS5o
+# dG0wEwYDVR0lBAwwCgYIKwYBBQUHAwgwGQYJKwYBBAGCNxQCBAweCgBTAHUAYgBD
+# AEEwCwYDVR0PBAQDAgGGMA8GA1UdEwEB/wQFMAMBAf8wHwYDVR0jBBgwFoAU1fZW
+# y4/oolxiaNE9lJBb186aGMQwVgYDVR0fBE8wTTBLoEmgR4ZFaHR0cDovL2NybC5t
+# aWNyb3NvZnQuY29tL3BraS9jcmwvcHJvZHVjdHMvTWljUm9vQ2VyQXV0XzIwMTAt
+# MDYtMjMuY3JsMFoGCCsGAQUFBwEBBE4wTDBKBggrBgEFBQcwAoY+aHR0cDovL3d3
+# dy5taWNyb3NvZnQuY29tL3BraS9jZXJ0cy9NaWNSb29DZXJBdXRfMjAxMC0wNi0y
+# My5jcnQwDQYJKoZIhvcNAQELBQADggIBAJ1VffwqreEsH2cBMSRb4Z5yS/ypb+pc
+# FLY+TkdkeLEGk5c9MTO1OdfCcTY/2mRsfNB1OW27DzHkwo/7bNGhlBgi7ulmZzpT
+# Td2YurYeeNg2LpypglYAA7AFvonoaeC6Ce5732pvvinLbtg/SHUB2RjebYIM9W0j
+# VOR4U3UkV7ndn/OOPcbzaN9l9qRWqveVtihVJ9AkvUCgvxm2EhIRXT0n4ECWOKz3
+# +SmJw7wXsFSFQrP8DJ6LGYnn8AtqgcKBGUIZUnWKNsIdw2FzLixre24/LAl4FOmR
+# sqlb30mjdAy87JGA0j3mSj5mO0+7hvoyGtmW9I/2kQH2zsZ0/fZMcm8Qq3UwxTSw
+# ethQ/gpY3UA8x1RtnWN0SCyxTkctwRQEcb9k+SS+c23Kjgm9swFXSVRk2XPXfx5b
+# RAGOWhmRaw2fpCjcZxkoJLo4S5pu+yFUa2pFEUep8beuyOiJXk+d0tBMdrVXVAmx
+# aQFEfnyhYWxz/gq77EFmPWn9y8FBSX5+k77L+DvktxW/tM4+pTFRhLy/AsGConsX
+# HRWJjXD+57XQKBqJC4822rpM+Zv/Cuk0+CQ1ZyvgDbjmjJnW4SLq8CdCPSWU5nR0
+# W2rRnj7tfqAxM328y+l7vzhwRNGQ8cirOoo6CGJ/2XBjU02N7oJtpQUQwXEGahC0
+# HVUzWLOhcGbyoYIDVjCCAj4CAQEwggEBoYHZpIHWMIHTMQswCQYDVQQGEwJVUzET
+# MBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwGA1UEChMV
+# TWljcm9zb2Z0IENvcnBvcmF0aW9uMS0wKwYDVQQLEyRNaWNyb3NvZnQgSXJlbGFu
+# ZCBPcGVyYXRpb25zIExpbWl0ZWQxJzAlBgNVBAsTHm5TaGllbGQgVFNTIEVTTjoy
+# RDFBLTA1RTAtRDk0NzElMCMGA1UEAxMcTWljcm9zb2Z0IFRpbWUtU3RhbXAgU2Vy
+# dmljZaIjCgEBMAcGBSsOAwIaAxUA5VHBr4h00EN7jUdQ33SE+qbk/8CggYMwgYCk
+# fjB8MQswCQYDVQQGEwJVUzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UEBxMH
+# UmVkbW9uZDEeMBwGA1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMSYwJAYDVQQD
+# Ex1NaWNyb3NvZnQgVGltZS1TdGFtcCBQQ0EgMjAxMDANBgkqhkiG9w0BAQsFAAIF
+# AO6Hv8EwIhgPMjAyNjEwMjQyMzM3MzdaGA8yMDI2MTAyNTIzMzczN1owdDA6Bgor
+# BgEEAYRZCgQBMSwwKjAKAgUA7oe/wQIBADAHAgEAAgIdXDAHAgEAAgITuDAKAgUA
+# 7okRQQIBADA2BgorBgEEAYRZCgQCMSgwJjAMBgorBgEEAYRZCgMCoAowCAIBAAID
+# B6EgoQowCAIBAAIDAYagMA0GCSqGSIb3DQEBCwUAA4IBAQB70t143TwmM1WsLgac
+# z5SaGh10eL9GIiFgbm53lNenq6jV3ijoAzhHjv1uk4ErfA4SBEgpesaB1dn8O6Cj
+# GsViYVws96Kii+xgJ5V+U9n4yLkijuJ1GkI9AUuMDBoR5STu8bX7rJAdwHnpLJ9h
+# ZZyEva6huAW/nmqSzQjQkIfqhs7HaIrCIowPkj56k88kNEAOKEaqm8gulqE7/qK5
+# GJleel9NvEKX64+zXGTkb0y3YhA8YwiT5OohG2F48o+MGSbik71DZVPInzIVEV4I
+# A7XIORi5+n6SYuMpn4qqJp/3JqWx7QMbz8qWfGJ27kOBT1Y16PxBZUXBpAwepN3T
+# UX1wMYIEDTCCBAkCAQEwgZMwfDELMAkGA1UEBhMCVVMxEzARBgNVBAgTCldhc2hp
+# bmd0b24xEDAOBgNVBAcTB1JlZG1vbmQxHjAcBgNVBAoTFU1pY3Jvc29mdCBDb3Jw
+# b3JhdGlvbjEmMCQGA1UEAxMdTWljcm9zb2Z0IFRpbWUtU3RhbXAgUENBIDIwMTAC
+# EzMAAAIS0QgGPMoYT6oAAQAAAhIwDQYJYIZIAWUDBAIBBQCgggFKMBoGCSqGSIb3
+# DQEJAzENBgsqhkiG9w0BCRABBDAvBgkqhkiG9w0BCQQxIgQgtZ3uOBhiCta+tOog
+# waYPNyxGb2VCZBLwdHAFqbHD/6kwgfoGCyqGSIb3DQEJEAIvMYHqMIHnMIHkMIG9
+# BCBz+X5GvO7WngknH4BZeYU+BzBL1Jy5oJ8wVlTNIxfYgzCBmDCBgKR+MHwxCzAJ
+# BgNVBAYTAlVTMRMwEQYDVQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRtb25k
+# MR4wHAYDVQQKExVNaWNyb3NvZnQgQ29ycG9yYXRpb24xJjAkBgNVBAMTHU1pY3Jv
+# c29mdCBUaW1lLVN0YW1wIFBDQSAyMDEwAhMzAAACEtEIBjzKGE+qAAEAAAISMCIE
+# IFqXVK1+aPjZvOrVtNkvw0csPCe6nHfOwf9SJ1LDvrnaMA0GCSqGSIb3DQEBCwUA
+# BIICAHzqYky2tu3atCUAnuECwcNdgGxK74yiAjyXgKjrc6Iuv+pK6C6kqjTCtzi+
+# slVc4yeuFvKQBmyDQ/wz6WYVKTjlAh6OER6e+dCAQyJPjM8aJtjSCL2Q7Y5YVigM
+# fTdOYX1jpAKBOV1pBilIufwgaGjQ0AagbC4CvNfxDb+yLwDIuSeUQSdNBQmnzd2R
+# mPFQX910k9TSbqVrQFIE/1yjv/lpOzAQ0/8tWCqJiYc2V/Jh7c1D9gk7p27rJ1Pn
+# /WHk+7q64DOQv6sCFmL03Blhp65OZlzSW9yQVO//UdCmmpemyjloIh6F48Otp+i+
+# 2Va0E77Kdiyk2LJ2bUnO5zTAkSU7PBxysB3pvqYg8AhMRW+4KIOY1S19CTGSdOwk
+# /X0V4U1PYQtpoZaIRo+vlmhHjCJzVb1hbIw9owkfQBhSge3y9vZ1BJGNftqD9lfA
+# +jtQKS9fcLifZxYYVcrLqCrmRId+Lgt1spmgnFT921Uu5Svb711jt0Zdv6gJe9hz
+# GJBFmaqRLLF5w+iJpZmaI4B8orRgjB9TC+DoI4jfa2hTwWt9pGQlBq+CBEev8Z3g
+# dEx2e6RIeC5FiosYahtd4oYAgCnC79VDrkQ9t8JTTOmJg5QT0KhX7aEMR6vHBzhl
+# +QjD8QDvQtCni4XOfdReratIzoJlvaSUbRlmv+y+EtVhi/39
+# SIG # End signature block

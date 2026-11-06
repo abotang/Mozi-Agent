@@ -1,0 +1,263 @@
+import json
+from itertools import count
+from pathlib import Path
+import sys
+from tempfile import TemporaryDirectory
+import unittest
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from runtime.skills.compiler import PlanCompiler
+from runtime.contracts import ExecutionResult
+from runtime.app.daemon import AutomaticMissionRunner
+from runtime.execution.executor import ScriptExecutionError
+from runtime.skills.registry import SkillRegistry
+
+
+class AutoRunnerTests(unittest.TestCase):
+    def test_duplicate_unit_gets_one_immediate_replan(self):
+        registry = SkillRegistry(ROOT / "skills").load()
+        situation = json.loads((ROOT / "examples/situation.example.json")
+                               .read_text(encoding="utf-8"))
+        source = json.loads((ROOT / "examples/plan.multiple.example.json")
+                            .read_text(encoding="utf-8"))
+        valid = json.loads(json.dumps(source["skill_calls"][:2]))
+        duplicate = json.loads(json.dumps(valid))
+        duplicate[1]["unit_guids"] = list(duplicate[0]["unit_guids"])
+
+        class Planner:
+            requests = []
+
+            def plan(self, _situation, instruction):
+                self.requests.append(instruction)
+                return {"version": 1, "summary": "test", "skill_calls":
+                        duplicate if len(self.requests) == 1 else valid}
+
+        class Executor:
+            created = []
+
+            def execute(self, invocations, *, dry_run=False):
+                if dry_run:
+                    return []
+                item = invocations[0]
+                self.created.append(item.call.mission_name)
+                guid = f"11111111-2222-3333-4444-{len(self.created):012d}"
+                return [ExecutionResult(item.call.call_id, item.call.skill_id,
+                                        "execute", True, 0,
+                                        json.dumps({"tasks": [{"missionGuid": guid}]}), "",
+                                        str(item.config_path), str(item.report_path))]
+
+        planner, executor, lines = Planner(), Executor(), []
+        with TemporaryDirectory(dir=ROOT) as folder:
+            runner = AutomaticMissionRunner(
+                collector=lambda: json.loads(json.dumps(situation)),
+                planner=planner, registry=registry,
+                compiler=PlanCompiler(registry, ROOT / "scripts/powershell", folder),
+                executor=executor, state_path=Path(folder) / "state.json",
+                sleep=lambda _: None, output=lines.append)
+            runner.run("自动测试", max_cycles=1)
+        self.assertEqual(len(planner.requests), 2)
+        self.assertIn("重复分配", planner.requests[1])
+        self.assertEqual(len(executor.created), 2)
+        self.assertIn("立即请 Agent 重规划一次", "\n".join(lines))
+
+    def test_navy_patrol_is_opening_only_but_later_strike_runs(self):
+        registry = SkillRegistry(ROOT / "skills").load()
+        situation = json.loads((ROOT / "examples" / "situation.example.json")
+                               .read_text(encoding="utf-8"))
+        example = json.loads((ROOT / "examples" / "plan.multiple.example.json")
+                             .read_text(encoding="utf-8"))
+        patrol = json.loads(json.dumps(example["skill_calls"][0]))
+        patrol.update({"call_id": "ship-opening", "skill_id": "navy.sea_patrol",
+                       "mission_name": "开局海上巡逻",
+                       "unit_guids": ["bbbbbbbb-0000-0000-0000-000000000001"]})
+        later_patrol = json.loads(json.dumps(patrol))
+        later_patrol.update({"call_id": "ship-later", "mission_name": "后续海上巡逻"})
+        strike = json.loads(json.dumps(example["skill_calls"][3]))
+        strike.update({"call_id": "ship-strike", "mission_name": "舰艇对海打击",
+                       "unit_guids": ["bbbbbbbb-0000-0000-0000-000000000002"]})
+
+        class Planner:
+            flags = []
+
+            def plan(self, current, _instruction):
+                self.flags.append(current["operational_rules"]["navy_patrol_opening_allowed"])
+                calls = [patrol] if len(self.flags) == 1 else [later_patrol, strike]
+                return {"version": 1, "skill_calls": calls, "summary": "测试"}
+
+        class Executor:
+            created = []
+
+            def execute(self, invocations, *, dry_run=False):
+                if dry_run:
+                    return []
+                item = invocations[0]
+                self.created.append(item.call.skill_id)
+                guid = f"11111111-2222-3333-4444-{len(self.created):012d}"
+                return [ExecutionResult(item.call.call_id, item.call.skill_id,
+                                        "execute", True, 0,
+                                        json.dumps({"tasks": [{"missionGuid": guid}]}), "",
+                                        str(item.config_path), str(item.report_path))]
+
+        planner, executor = Planner(), Executor()
+        timer = count(400, 400)
+        with TemporaryDirectory(dir=ROOT) as folder:
+            runner = AutomaticMissionRunner(
+                collector=lambda: json.loads(json.dumps(situation)),
+                planner=planner, registry=registry,
+                compiler=PlanCompiler(registry, ROOT / "scripts" / "powershell", folder),
+                executor=executor, state_path=Path(folder) / "state.json",
+                sleep=lambda _: None, clock=lambda: next(timer), output=lambda _: None)
+            with patch("runtime.app.daemon._mission_exists", return_value=True):
+                runner.run("自动测试", max_cycles=2)
+            state = json.loads((Path(folder) / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(planner.flags, [True, False])
+        self.assertEqual(executor.created, ["navy.sea_patrol", "navy.sea_strike"])
+        self.assertTrue(state["navy_patrol_opening_done"])
+        self.assertNotIn("后续海上巡逻", state["missions"])
+
+    def test_current_time_change_keeps_recovered_mission_state(self):
+        registry = SkillRegistry(ROOT / "skills").load()
+        situation = json.loads((ROOT / "examples" / "situation.example.json")
+                               .read_text(encoding="utf-8"))
+        situation["scenario"]["initial_time"] = "2026-11-06 08:00:00"
+        mission_guid = "11111111-2222-3333-4444-555555555555"
+        with TemporaryDirectory(dir=ROOT) as folder:
+            reports = Path(folder) / "old-run" / "reports"
+            reports.mkdir(parents=True)
+            (reports / "one.json").write_text(json.dumps({
+                "side": situation["side"],
+                "tasks": [{"key": "airCombatPatrol", "name": "已有CAP",
+                           "missionGuid": mission_guid}],
+            }), encoding="utf-8")
+            runner = AutomaticMissionRunner(
+                collector=lambda: situation, planner=object(), registry=registry,
+                compiler=PlanCompiler(registry, ROOT / "scripts" / "powershell", folder),
+                executor=object(), state_path=Path(folder) / "state.json")
+            with patch("runtime.app.daemon._mission_exists", return_value=True):
+                runner._reconcile(situation)
+                self.assertIn("已有CAP", runner.state["missions"])
+                situation["scenario"]["start_time"] = "2026-11-06 09:00:00"
+                runner._reconcile(situation)
+            self.assertIn("已有CAP", runner.state["missions"])
+            self.assertIn("2026-11-06 08:00:00", runner.state["scenario"])
+
+    def test_uncertain_execution_is_not_retried_after_restart(self):
+        registry = SkillRegistry(ROOT / "skills").load()
+        situation = json.loads((ROOT / "examples" / "situation.example.json")
+                               .read_text(encoding="utf-8"))
+        plan = json.loads((ROOT / "examples" / "plan.multiple.example.json")
+                          .read_text(encoding="utf-8"))
+        plan["skill_calls"] = plan["skill_calls"][:1]
+
+        class Planner:
+            def plan(self, _situation, _instruction):
+                return plan
+
+        class Executor:
+            executions = 0
+
+            def execute(self, invocations, *, dry_run=False):
+                if dry_run:
+                    return []
+                self.executions += 1
+                item = invocations[0]
+                result = ExecutionResult(item.call.call_id, item.call.skill_id,
+                                         "execute", False, 0, "", "ParserError",
+                                         str(item.config_path), str(item.report_path))
+                raise ScriptExecutionError("ParserError", [result])
+
+        executor = Executor()
+        with TemporaryDirectory(dir=ROOT) as folder:
+            state_path = Path(folder) / "state.json"
+            for _ in range(2):
+                runner = AutomaticMissionRunner(
+                    collector=lambda: json.loads(json.dumps(situation)),
+                    planner=Planner(), registry=registry,
+                    compiler=PlanCompiler(registry, ROOT / "scripts" / "powershell", folder),
+                    executor=executor, state_path=state_path,
+                    sleep=lambda _: None, output=lambda _: None)
+                runner.run("自动测试", max_cycles=1)
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual(executor.executions, 1)
+        self.assertIn("蓝方-北区战斗巡逻", state["uncertain"])
+
+    def test_shows_agent_plan_before_validation_error(self):
+        registry = SkillRegistry(ROOT / "skills").load()
+        situation = json.loads((ROOT / "examples" / "situation.example.json")
+                               .read_text(encoding="utf-8"))
+        plan = json.loads((ROOT / "examples" / "plan.multiple.example.json")
+                          .read_text(encoding="utf-8"))
+        plan["skill_calls"] = plan["skill_calls"][:1]
+        plan["skill_calls"][0]["area"] = None
+
+        class Planner:
+            def plan(self, _situation, _instruction):
+                return plan
+
+        lines = []
+        with TemporaryDirectory(dir=ROOT) as folder:
+            runner = AutomaticMissionRunner(
+                collector=lambda: json.loads(json.dumps(situation)),
+                planner=Planner(), registry=registry,
+                compiler=PlanCompiler(registry, ROOT / "scripts" / "powershell", folder),
+                executor=object(), state_path=Path(folder) / "state.json",
+                sleep=lambda _: None, output=lines.append)
+            runner.run("自动测试", max_cycles=1)
+        transcript = "\n".join(lines)
+        self.assertIn("Agent 完整方案", transcript)
+        self.assertIn("蓝方-北区战斗巡逻", transcript)
+        self.assertIn('"area": null', transcript)
+        self.assertLess(transcript.index("Agent 完整方案"),
+                        transcript.index("转换并校验任务参数失败"))
+
+    def test_creates_once_then_skips_unchanged_situation(self):
+        registry = SkillRegistry(ROOT / "skills").load()
+        situation = json.loads((ROOT / "examples" / "situation.example.json").read_text(encoding="utf-8"))
+        plan = json.loads((ROOT / "examples" / "plan.multiple.example.json").read_text(encoding="utf-8"))
+        plan["skill_calls"] = plan["skill_calls"][:1]
+
+        class Planner:
+            calls = 0
+
+            def plan(self, situation, instruction):
+                self.calls += 1
+                return plan
+
+        class Executor:
+            validations = 0
+            executions = 0
+
+            def execute(self, invocations, *, dry_run=False):
+                if dry_run:
+                    self.validations += 1
+                    return []
+                self.executions += 1
+                item = invocations[0]
+                return [ExecutionResult(
+                    item.call.call_id, item.call.skill_id, "execute", True, 0,
+                    json.dumps({"tasks": [{"missionGuid": "11111111-2222-3333-4444-555555555555"}]}),
+                    "", str(item.config_path), str(item.report_path))]
+
+        planner = Planner()
+        executor = Executor()
+        with TemporaryDirectory(dir=ROOT) as folder:
+            runner = AutomaticMissionRunner(
+                collector=lambda: json.loads(json.dumps(situation)),
+                planner=planner, registry=registry,
+                compiler=PlanCompiler(registry, ROOT / "scripts" / "powershell", folder),
+                executor=executor, state_path=Path(folder) / "state.json",
+                sleep=lambda _: None, clock=lambda: 100.0, output=lambda _: None)
+            with patch("runtime.app.daemon._mission_exists", return_value=True):
+                runner.run("自动测试", max_cycles=2)
+            state = json.loads((Path(folder) / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(planner.calls, 1)
+        self.assertEqual(executor.executions, 1)
+        self.assertEqual(executor.validations, 1)
+        self.assertIn("蓝方-北区战斗巡逻", state["missions"])
+
+
+if __name__ == "__main__":
+    unittest.main()

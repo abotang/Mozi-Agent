@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "skill_id": "air.early_warning",
+  "service": "air",
+  "agent_owner": "awacs",
+  "display_name": "空中预警",
+  "description": "为蓝方预警机创建以最近蓝方机场或航母为起点、全部点在300公里内的跑马道支援区域。",
+  "task_key": "airEarlyWarning",
+  "script": "05-空中预警.ps1",
+  "mission_type": "Support",
+  "classify": "",
+  "unit_types": ["Aircraft", "飞机"],
+  "requires_area": true,
+  "area_type_id": "407",
+  "requires_target": false,
+  "target_kind": "Aircraft",
+  "supports_escort": false,
+  "supports_loadout": true,
+  "supports_routes": false,
+  "parameter_schema": {"relieved_unit_guid": {"type": "string", "required": false}},
+  "rules": ["默认只出动一架；战场范围很大且单机不能覆盖独立方向时才出动第二架，reason 说明依据", "同批和已有预警任务最多两架，区域中心按战场跨度保持间隔，不重叠", "仅选择一架预警机；不得选战斗机", "最近蓝方机场或航母作为起飞平台；area.pattern 必须为 racetrack", "有进攻轴向时 area.attack_bearing_deg 为0到小于360度，area.forward_km 为0到284公里；两字段必须一起填写", "无已知空中进攻轴向时仅填 pattern，默认平台附近、东西向", "跑马道整体长60公里、宽30公里，直线段L=30公里、转弯半径r=15公里，全部区域点距平台不超过300公里", "不选择打击目标", "启用1/3规则"]
+}

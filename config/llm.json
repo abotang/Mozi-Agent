@@ -1,0 +1,17 @@
+{
+  "base_url": "https://llm-c4ufx6odg6clmwbj.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+  "model": "deepseek-v4.1-flash",
+  "objective": "依据墨子当前蓝方态势制定总体方案，再由空军、预警机、海军、陆军 Agent 选择已注册任务 Skill、真实单位、当前接触与任务区域。Agent 不生成任务脚本。",
+  "api_key_env": "MOZI_QWEN_API_KEY",
+  "api_key_file": "qwen.key.local",
+  "timeout_sec": 180,
+  "event_cooldown_sec": 15,
+  "max_age_sec": 600,
+  "joint_model": "deepseek-v4.1-flash",
+  "component_model": "deepseek-v4.1-flash",
+  "joint_max_tokens": 4096,
+  "component_max_tokens": 4096,
+  "joint_interval_sec": 300,
+  "component_parallelism": 4,
+  "enable_thinking": false
+}

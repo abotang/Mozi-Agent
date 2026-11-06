@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "skill_id": "air.combat_patrol",
+  "service": "air",
+  "display_name": "飞机战斗巡逻",
+  "description": "为蓝方飞机创建带空中巡逻区的战斗巡逻任务。",
+  "task_key": "airCombatPatrol",
+  "script": "01-飞机战斗巡逻.ps1",
+  "mission_type": "Patrol",
+  "classify": "AAW",
+  "unit_types": ["Aircraft", "飞机"],
+  "requires_area": true,
+  "area_type_id": "405",
+  "requires_target": false,
+  "target_kind": "Aircraft",
+  "supports_escort": false,
+  "supports_loadout": true,
+  "supports_routes": false,
+  "rules": ["必须划定至少3点的空中巡逻区或复用已有区域", "巡逻任务不选择打击目标", "脚本为飞机巡逻启用1/3规则"]
+}

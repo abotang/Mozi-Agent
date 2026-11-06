@@ -1,0 +1,14 @@
+{
+  "base_url": "http://127.0.0.1:8000/v1",
+  "model": "your-model",
+  "objective": "依据当前墨子态势形成蓝方总体方案，由空军、预警机、海军、陆军 Agent 选择各自注册的任务 Skill、真实单位、当前接触和任务区域；不得临时生成任务脚本。",
+  "api_key_env": "MOZI_LLM_API_KEY",
+  "timeout_sec": 120,
+  "event_cooldown_sec": 15,
+  "max_age_sec": 600,
+  "joint_max_tokens": 4096,
+  "component_max_tokens": 4096,
+  "joint_interval_sec": 300,
+  "component_parallelism": 4,
+  "enable_thinking": false
+}

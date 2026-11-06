@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "summary": "建立双区战斗巡逻并组织海空反舰",
+  "skill_calls": [
+    {
+      "call_id": "cap-north",
+      "skill_id": "air.combat_patrol",
+      "mission_name": "蓝方-北区战斗巡逻",
+      "unit_guids": ["aaaaaaaa-0000-0000-0000-000000000001"],
+      "escort_unit_guids": [],
+      "target_contact_guids": [],
+      "loadout_guid": "",
+      "existing_mission_guid": "",
+      "area": {
+        "name": "蓝方-北区空中巡逻区",
+        "remark": "北区战斗巡逻",
+        "points": [
+          {"lat": 21.0, "lon": 130.0},
+          {"lat": 21.0, "lon": 131.0},
+          {"lat": 22.0, "lon": 131.0},
+          {"lat": 22.0, "lon": 130.0}
+        ]
+      },
+      "reason": "保护北部空域"
+    },
+    {
+      "call_id": "cap-south",
+      "skill_id": "air.combat_patrol",
+      "mission_name": "蓝方-南区战斗巡逻",
+      "unit_guids": ["aaaaaaaa-0000-0000-0000-000000000002"],
+      "escort_unit_guids": [],
+      "target_contact_guids": [],
+      "loadout_guid": "",
+      "existing_mission_guid": "",
+      "area": {
+        "name": "蓝方-南区空中巡逻区",
+        "points": [
+          {"lat": 18.0, "lon": 130.0},
+          {"lat": 18.0, "lon": 131.0},
+          {"lat": 19.0, "lon": 131.0},
+          {"lat": 19.0, "lon": 130.0}
+        ]
+      },
+      "reason": "保护南部空域"
+    },
+    {
+      "call_id": "air-sea-strike-1",
+      "skill_id": "air.sea_strike",
+      "mission_name": "蓝方-航空对海打击-1",
+      "unit_guids": ["aaaaaaaa-0000-0000-0000-000000000003"],
+      "escort_unit_guids": [],
+      "target_contact_guids": ["eeeeeeee-0000-0000-0000-000000000001"],
+      "loadout_guid": "",
+      "existing_mission_guid": "",
+      "area": null,
+      "routes": null,
+      "reason": "攻击已探测敌舰"
+    },
+    {
+      "call_id": "ship-sea-strike-1",
+      "skill_id": "navy.sea_strike",
+      "mission_name": "蓝方-舰艇对海攻击-1",
+      "unit_guids": ["bbbbbbbb-0000-0000-0000-000000000001"],
+      "escort_unit_guids": [],
+      "target_contact_guids": ["eeeeeeee-0000-0000-0000-000000000001"],
+      "loadout_guid": "",
+      "existing_mission_guid": "",
+      "area": null,
+      "routes": null,
+      "reason": "海空协同攻击已探测敌舰"
+    }
+  ]
+}
