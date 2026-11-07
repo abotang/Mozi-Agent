@@ -48,6 +48,9 @@ def _deployment(path: str) -> dict:
     for key in ("mozi_host", "mozi_ws_port", "mozi_api_base", "llm_config"):
         if not data.get(key):
             raise ValueError(f"部署配置缺少 {key}")
+    parallelism = data.get("script_parallelism", 2)
+    if type(parallelism) is not int or not 1 <= parallelism <= 4:
+        raise ValueError("script_parallelism 必须是 1 到 4 的整数")
     llm = Path(data["llm_config"])
     data["llm_config"] = str(llm if llm.is_absolute() else Path(path).resolve().parent / llm)
     if data.get("powershell_executable"):
@@ -178,6 +181,7 @@ def _auto_run(registry: SkillRegistry, deployment_path: str,
         area_cleaner=OwnedAreaGarbageCollector(ROOT / "runs"),
         poll_interval_sec=float(deployment.get("poll_interval_sec", 10)),
         replan_interval_sec=float(deployment.get("replan_interval_sec", 300)),
+        script_parallelism=deployment.get("script_parallelism", 2),
     )
     print("当前墨子态势将发送至模型服务：", config.base_url, flush=True)
     try:

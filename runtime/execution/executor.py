@@ -1,4 +1,4 @@
-"""非 shell 拼接的 PowerShell 执行器；先全量校验，再顺序执行。"""
+"""PowerShell 执行器；批量接口串行，自动循环可并行调用独立单任务。"""
 
 from __future__ import annotations
 
@@ -119,7 +119,7 @@ class PowerShellMissionExecutor:
         if dry_run:
             return results
 
-        # 墨子任务接口存在顺序依赖，执行阶段故意串行。
+        # 批量调用保持串行；自动循环把已预校验的独立任务分别提交到线程池。
         for item in invocations:
             result = self._run(item, validate_only=False)
             results.append(result)
@@ -128,6 +128,16 @@ class PowerShellMissionExecutor:
                 raise ScriptExecutionError(
                     f"任务 {result.call_id} 执行失败；后续任务未执行：{detail}", results)
         return results
+
+    def execute_prevalidated(self, item: MissionInvocation) -> list[ExecutionResult]:
+        """Execute one task after a successful full-batch dry run."""
+        if not item.config_path.is_file():
+            raise RuntimeError(f"任务 {item.call.call_id} 尚未生成已预校验配置")
+        result = self._run(item, validate_only=False)
+        if not result.success:
+            detail = (result.stderr or result.stdout or "脚本未返回任务 GUID 和执行报告")[:1200]
+            raise ScriptExecutionError(f"任务 {result.call_id} 执行失败：{detail}", [result])
+        return [result]
 
 
 def write_execution_audit(path: str | Path, *, plan: dict, results: list[ExecutionResult]) -> None:

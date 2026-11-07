@@ -97,8 +97,10 @@ class PowerShellUtf8Tests(unittest.TestCase):
             with TemporaryDirectory(dir=ROOT) as folder:
                 invocation = PlanCompiler(registry, ROOT / "scripts" / "powershell",
                                           folder).compile(calls, situation, "utf8")
-                results = PowerShellMissionExecutor(executable=executable).execute(
-                    invocation, dry_run=False)
+                executor = PowerShellMissionExecutor(executable=executable)
+                executor.execute(invocation, dry_run=True)
+                results = [result for item in invocation
+                           for result in executor.execute_prevalidated(item)]
                 for item in invocation:
                     self.assertTrue(Path(str(item.report_path) + ".area.json").is_file())
                 situation["units"]["air"].append({
@@ -125,8 +127,8 @@ class PowerShellUtf8Tests(unittest.TestCase):
                                              situation, registry)
                 relief_invocation = PlanCompiler(registry, ROOT / "scripts" / "powershell",
                                                  folder).compile(relief_calls, situation, "relief")
-                PowerShellMissionExecutor(executable=executable).execute(
-                    relief_invocation, dry_run=False)
+                executor.execute(relief_invocation, dry_run=True)
+                executor.execute_prevalidated(relief_invocation[0])
             self.assertTrue(results[-1].success, results[-1].stderr)
             area_posts = [item for item in Handler.requests if item[0].endswith("/ScenArea")]
             self.assertEqual(len(area_posts), 3)

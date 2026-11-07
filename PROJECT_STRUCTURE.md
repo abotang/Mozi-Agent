@@ -2,6 +2,8 @@
 
 运行入口是根目录 `run.py`。直接运行它会启动自动推演；程序读取 `config/` 配置和墨子态势，经 Agent 决策、规则校验后调用固定脚本。
 
+自动推演的脚本并发数在 `config/deployment.json` 的 `script_parallelism` 设置；执行代码位于 `runtime/app/daemon.py`。任务在并行下发前全部通过脚本预校验，运行状态只由主线程写入。
+
 ```text
 重构版_脚本Skill任务调度架构/
 ├─ run.py                 启动入口

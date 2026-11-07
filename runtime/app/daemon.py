@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import json
 from pathlib import Path
@@ -59,6 +60,7 @@ class AutomaticMissionRunner:
     def __init__(self, *, collector, planner, registry, compiler: PlanCompiler,
                  executor: PowerShellMissionExecutor, state_path: Path,
                  poll_interval_sec: float = 10, replan_interval_sec: float = 300,
+                 script_parallelism: int = 2,
                  sleep=time.sleep, clock=time.monotonic, output=print,
                  area_cleaner: OwnedAreaGarbageCollector | None = None):
         self.collector = collector
@@ -69,6 +71,9 @@ class AutomaticMissionRunner:
         self.state_path = Path(state_path)
         self.poll_interval_sec = poll_interval_sec
         self.replan_interval_sec = replan_interval_sec
+        if type(script_parallelism) is not int or not 1 <= script_parallelism <= 4:
+            raise ValueError("script_parallelism 必须是 1 到 4 的整数")
+        self.script_parallelism = script_parallelism
         self.sleep = sleep
         self.clock = clock
         self.output = output
@@ -294,33 +299,51 @@ class AutomaticMissionRunner:
                     invocations = self.compiler.compile(pending, situation, run_id)
                     # 先完整校验本轮所有任务，再下发第一个创建请求。
                     self.executor.execute(invocations, dry_run=True)
-                    for item in invocations:
-                        try:
-                            results = self.executor.execute([item], dry_run=False)
-                            guid = _mission_guid(results)
-                            if not guid:
-                                raise RuntimeError(f"{item.call.mission_name} 执行响应缺少任务 GUID")
-                            self.state["missions"][item.call.mission_name] = {
-                                "guid": guid, "skill_id": item.call.skill_id,
-                                "report": str(item.report_path),
-                                "created_at_sim": (record.get("created_at_sim") if (record := self.state["missions"].get(item.call.mission_name)) else situation["scenario"]["start_time"]),
-                                "deployment": (item.call.area or {}).get("deployment", {}),
-                            }
-                            if item.call.skill_id == "air.early_warning":
-                                record_success(self.state, item.call, guid)
-                            self._save_state()
-                            self.output(f"已{'更新' if item.call.existing_mission_guid else '创建'}：{item.call.mission_name} ({guid})")
-                        except ScriptExecutionError as exc:
-                            if any(result.phase == "execute" for result in exc.results):
+                    workers = min(self.script_parallelism, len(invocations))
+                    self.output(f"[第 {cycles} 轮] 执行 {len(invocations)} 项任务脚本；最大并行数 {workers}")
+                    failures = []
+                    execute_one = getattr(self.executor, "execute_prevalidated", None)
+                    if execute_one is None:
+                        execute_one = lambda item: self.executor.execute([item], dry_run=False)
+                    # 每个 PowerShell 进程仅处理一个任务；同一任务内的墨子 API
+                    # 创建区域、任务、单位分配和回读顺序保持不变。
+                    with ThreadPoolExecutor(max_workers=workers,
+                                            thread_name_prefix="mozi-mission") as pool:
+                        futures = {
+                            pool.submit(execute_one, item): item
+                            for item in invocations
+                        }
+                        for future in as_completed(futures):
+                            item = futures[future]
+                            try:
+                                results = future.result()
+                                guid = _mission_guid(results)
+                                if not guid:
+                                    raise RuntimeError(f"{item.call.mission_name} 执行响应缺少任务 GUID")
+                                record = self.state["missions"].get(item.call.mission_name)
+                                self.state["missions"][item.call.mission_name] = {
+                                    "guid": guid, "skill_id": item.call.skill_id,
+                                    "report": str(item.report_path),
+                                    "created_at_sim": (record.get("created_at_sim") if record else situation["scenario"]["start_time"]),
+                                    "deployment": (item.call.area or {}).get("deployment", {}),
+                                }
+                                if item.call.skill_id == "air.early_warning":
+                                    record_success(self.state, item.call, guid)
+                                self._save_state()
+                                self.output(f"已{'更新' if item.call.existing_mission_guid else '创建'}：{item.call.mission_name} ({guid})")
+                            except ScriptExecutionError as exc:
+                                if any(result.phase == "execute" for result in exc.results):
+                                    self._mark_uncertain(item, str(exc))
+                                failures.append(f"{item.call.mission_name}: {exc}")
+                                self.output(f"创建失败：{item.call.mission_name}：{exc}")
+                            except Exception as exc:
                                 self._mark_uncertain(item, str(exc))
-                            self.output(f"创建失败：{item.call.mission_name}：{exc}")
-                            self._cleanup_areas(situation, cycles)
-                            raise
-                        except Exception as exc:
-                            self._mark_uncertain(item, str(exc))
-                            self.output(f"创建结果未确认：{item.call.mission_name}：{exc}")
-                            self._cleanup_areas(situation, cycles)
-                            raise
+                                failures.append(f"{item.call.mission_name}: {exc}")
+                                self.output(f"创建结果未确认：{item.call.mission_name}：{exc}")
+                    if failures:
+                        self._cleanup_areas(situation, cycles)
+                        raise RuntimeError(f"{len(failures)} 项任务执行失败；其余任务已分别记录："
+                                           + "；".join(failures))
                 self._cleanup_areas(situation, cycles)
                 self.output(f"[第 {cycles} 轮] 完成，耗时 {self.clock()-started:.1f}s")
             except Exception as exc:

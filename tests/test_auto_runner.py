@@ -3,6 +3,7 @@ from itertools import count
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
+from threading import Barrier
 import unittest
 from unittest.mock import patch
 
@@ -114,7 +115,7 @@ class AutoRunnerTests(unittest.TestCase):
                 runner.run("自动测试", max_cycles=2)
             state = json.loads((Path(folder) / "state.json").read_text(encoding="utf-8"))
         self.assertEqual(planner.flags, [True, False])
-        self.assertEqual(executor.created, ["navy.sea_patrol", "navy.sea_strike"])
+        self.assertCountEqual(executor.created, ["navy.sea_patrol", "navy.sea_strike"])
         self.assertTrue(state["navy_patrol_opening_done"])
         self.assertNotIn("后续海上巡逻", state["missions"])
 
@@ -257,6 +258,92 @@ class AutoRunnerTests(unittest.TestCase):
         self.assertEqual(executor.executions, 1)
         self.assertEqual(executor.validations, 1)
         self.assertIn("蓝方-北区战斗巡逻", state["missions"])
+
+    def test_independent_tasks_execute_concurrently_after_full_preflight(self):
+        registry = SkillRegistry(ROOT / "skills").load()
+        situation = json.loads((ROOT / "examples/situation.example.json").read_text(encoding="utf-8"))
+        plan = json.loads((ROOT / "examples/plan.multiple.example.json").read_text(encoding="utf-8"))
+        plan["skill_calls"] = plan["skill_calls"][:2]
+        barrier = Barrier(2, timeout=3)
+
+        class Planner:
+            def plan(self, *_):
+                return plan
+
+        class Executor:
+            preflight = False
+            started = []
+
+            def execute(self, invocations, *, dry_run=False):
+                if dry_run:
+                    self.preflight = True
+                    return []
+                assert self.preflight
+                item = invocations[0]
+                self.started.append(item.call.call_id)
+                barrier.wait()
+                suffix = 1 if item.call.call_id == "cap-north" else 2
+                return [ExecutionResult(item.call.call_id, item.call.skill_id,
+                                        "execute", True, 0,
+                                        json.dumps({"tasks": [{"missionGuid":
+                                            f"11111111-2222-3333-4444-{suffix:012d}"}]}),
+                                        "", str(item.config_path), str(item.report_path))]
+
+        executor = Executor()
+        with TemporaryDirectory(dir=ROOT) as folder:
+            runner = AutomaticMissionRunner(
+                collector=lambda: json.loads(json.dumps(situation)), planner=Planner(),
+                registry=registry,
+                compiler=PlanCompiler(registry, ROOT / "scripts/powershell", folder),
+                executor=executor, state_path=Path(folder) / "state.json",
+                script_parallelism=2, sleep=lambda _: None, output=lambda _: None)
+            runner.run("自动测试", max_cycles=1)
+            state = json.loads((Path(folder) / "state.json").read_text(encoding="utf-8"))
+        self.assertCountEqual(executor.started, ["cap-north", "cap-south"])
+        self.assertIn("蓝方-北区战斗巡逻", state["missions"])
+        self.assertIn("蓝方-南区战斗巡逻", state["missions"])
+
+    def test_one_parallel_failure_does_not_discard_other_success(self):
+        registry = SkillRegistry(ROOT / "skills").load()
+        situation = json.loads((ROOT / "examples/situation.example.json").read_text(encoding="utf-8"))
+        plan = json.loads((ROOT / "examples/plan.multiple.example.json").read_text(encoding="utf-8"))
+        plan["skill_calls"] = plan["skill_calls"][:2]
+        barrier = Barrier(2, timeout=3)
+
+        class Planner:
+            def plan(self, *_):
+                return plan
+
+        class Executor:
+            def execute(self, invocations, *, dry_run=False):
+                if dry_run:
+                    return []
+                item = invocations[0]
+                barrier.wait()
+                if item.call.call_id == "cap-north":
+                    result = ExecutionResult(item.call.call_id, item.call.skill_id,
+                                             "execute", False, 1, "", "API失败",
+                                             str(item.config_path), str(item.report_path))
+                    raise ScriptExecutionError("API失败", [result])
+                return [ExecutionResult(item.call.call_id, item.call.skill_id,
+                                        "execute", True, 0,
+                                        json.dumps({"tasks": [{"missionGuid":
+                                            "11111111-2222-3333-4444-000000000002"}]}),
+                                        "", str(item.config_path), str(item.report_path))]
+
+        lines = []
+        with TemporaryDirectory(dir=ROOT) as folder:
+            runner = AutomaticMissionRunner(
+                collector=lambda: json.loads(json.dumps(situation)), planner=Planner(),
+                registry=registry,
+                compiler=PlanCompiler(registry, ROOT / "scripts/powershell", folder),
+                executor=Executor(), state_path=Path(folder) / "state.json",
+                script_parallelism=2, sleep=lambda _: None, output=lines.append)
+            runner.run("自动测试", max_cycles=1)
+            state = json.loads((Path(folder) / "state.json").read_text(encoding="utf-8"))
+        self.assertIn("蓝方-南区战斗巡逻", state["missions"])
+        self.assertIn("蓝方-北区战斗巡逻", state["uncertain"])
+        self.assertIn("1 项任务执行失败", "\n".join(lines))
 
 
 if __name__ == "__main__":
