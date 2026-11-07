@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+import time
 from typing import Any
 
 from agents.model_client import AgentConfig, ChatCompletionClient
@@ -17,14 +18,18 @@ from agents.prompt_loader import load_prompt
 from rules.awacs_area import is_awacs
 from rules.awacs_deployment import minimum_separation_km
 from rules.navy_patrol import available_skills
+from rules.agent_activation import skip_reason
+from rules.joint_refresh import refresh_reason, strategic_snapshot
 
 
 class HierarchicalSkillPlanner:
     def __init__(self, config: AgentConfig, registry: SkillRegistry,
-                 client: ChatCompletionClient | None = None):
+                 client: ChatCompletionClient | None = None, clock=time.monotonic):
         self.config = config
         self.registry = registry
         self.client = client or ChatCompletionClient(config)
+        self.clock = clock
+        self._joint_cache: dict[str, Any] | None = None
         self.joint_agent = JointCommanderAgent(self.client, load_prompt("joint"))
         self.service_agents = {
             "air": AirCommanderAgent(self.client, load_prompt("air")),
@@ -69,9 +74,11 @@ class HierarchicalSkillPlanner:
         rules["awacs_min_separation_km"] = minimum_separation_km(situation)
         navy_patrol_allowed = rules.get("navy_patrol_opening_allowed", True)
 
-        def catalog(owner: str) -> list[dict]:
-            entries = self.registry.public_catalog_for_agent(owner)
-            return available_skills(owner, entries, navy_patrol_allowed)
+        catalogs = {
+            owner: available_skills(owner, self.registry.public_catalog_for_agent(owner),
+                                    navy_patrol_allowed)
+            for owner in AGENT_OWNERS
+        }
 
         aircraft = situation["units"].get("air", [])
         own_unit_rows = {
@@ -80,22 +87,39 @@ class HierarchicalSkillPlanner:
             "navy": situation["units"].get("navy", []),
             "army": situation["units"].get("army", []),
         }
-
-        joint_context = {
-            "objective": self.config.objective,
-            "instruction": instruction,
-            "situation": deepcopy(situation),
-            "available_task_skills": {
-                owner: catalog(owner) for owner in AGENT_OWNERS
-            },
+        skips = {
+            owner: skip_reason(owner, own_unit_rows[owner], catalogs[owner],
+                               situation["contacts"], rules)
+            for owner in AGENT_OWNERS
         }
-        directive = self._joint(self.joint_agent.decide(joint_context))
+
+        # Validation retries append repair advice for service Agents. They do not
+        # change the top-level commander's objective or invalidate its cache.
+        joint_instruction = instruction.split("\n上一版任务方案校验失败：", 1)[0]
+        snapshot = strategic_snapshot(situation)
+        now = self.clock()
+        refresh = refresh_reason(self._joint_cache, snapshot, joint_instruction,
+                                 now, self.config.joint_interval_sec)
+        if refresh:
+            joint_context = {
+                "objective": self.config.objective,
+                "instruction": joint_instruction,
+                "situation": deepcopy(situation),
+                "available_task_skills": {
+                    owner: ([] if skips[owner] else catalogs[owner])
+                    for owner in AGENT_OWNERS
+                },
+            }
+            directive = self._joint(self.joint_agent.decide(joint_context))
+            self._joint_cache = {"instruction": joint_instruction, "snapshot": snapshot,
+                                 "at": now, "directive": deepcopy(directive)}
+        else:
+            directive = deepcopy(self._joint_cache["directive"])
 
         def decide(owner: str) -> dict[str, Any]:
-            if owner == "awacs" and (not own_unit_rows[owner] or
-                                     rules.get("awacs_trigger", {}).get("kind") == "hold"):
+            if skips[owner]:
                 return {"version": 1, "service": owner,
-                        "summary": "预警机规则未触发或无可用预警机", "skill_calls": []}
+                        "summary": f"待命：{skips[owner]}", "skill_calls": []}
             context = {
                 "objective": self.config.objective,
                 "instruction": instruction,
@@ -109,7 +133,7 @@ class HierarchicalSkillPlanner:
                 "contacts": deepcopy(situation["contacts"]),
                 "existing_missions": deepcopy(situation.get("existing_missions", [])),
                 "existing_areas": deepcopy(situation.get("existing_areas", [])),
-                "task_skills": catalog(owner),
+                "task_skills": catalogs[owner],
             }
             proposal = self._component(self.service_agents[owner].decide(context), owner)
             proposal["skill_calls"] = normalize_plan({
@@ -140,6 +164,9 @@ class HierarchicalSkillPlanner:
                 for owner in AGENT_OWNERS if str(proposals[owner].get("summary", "")).strip()
             ),
             "joint_directive": directive,
+            "joint_source": "model" if refresh else "cache",
+            "joint_refresh_reason": refresh,
+            "agent_skips": {owner: reason for owner, reason in skips.items() if reason},
             "service_proposals": proposals,
             "skill_calls": skill_calls,
         }

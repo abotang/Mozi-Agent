@@ -11,7 +11,7 @@
   "component_model": "deepseek-v4.1-flash",
   "joint_max_tokens": 4096,
   "component_max_tokens": 4096,
-  "joint_interval_sec": 300,
+  "joint_interval_sec": 900,
   "component_parallelism": 4,
   "enable_thinking": false
 }

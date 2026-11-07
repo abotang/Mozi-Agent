@@ -218,6 +218,13 @@ class AutomaticMissionRunner:
                                     "预警任务只用真实预警机，area 填 pattern=racetrack，"
                                     "有可信轴向时同时填 attack_bearing_deg 与 forward_km。不要编造 GUID。")
                     plan = self.planner.plan(situation, request)
+                    if plan.get("joint_source"):
+                        source = "重新调用模型" if plan["joint_source"] == "model" else "沿用上次方案"
+                        detail = plan.get("joint_refresh_reason", "")
+                        self.output(f"[第 {cycles} 轮] 联合指挥：{source}"
+                                    + (f"（{detail}）" if detail else ""))
+                    for owner, reason in plan.get("agent_skips", {}).items():
+                        self.output(f"[第 {cycles} 轮] 跳过 {owner} Agent：{reason}")
                     # 校验前展示方案，便于看见被规则拒绝的单位、目标与区域。
                     display = ({key: plan[key] for key in
                                 ("summary", "joint_directive", "service_proposals")

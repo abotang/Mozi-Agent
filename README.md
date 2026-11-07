@@ -22,6 +22,8 @@
 
 五个 Agent 的提示词分别放在根目录 `prompts/`，Agent 角色和模型客户端放在 `agents/`，规划编排在 `runtime/planning/`。实际模型配置在 `config/llm.json`。运行 `python run.py agent-status` 可查看模型、Agent 和密钥环境变量是否已配置。目录职责详见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)。
 
+专业 Agent 调用前先由 `rules/agent_activation.py` 检查本军种单元、当前可用 Skill 和打击任务所需的实时接触；无可执行任务则直接待命，不请求模型。巡逻等无需敌方接触的 Skill 不因无接触而跳过。联合指挥方案在进程内缓存，`config/llm.json` 的 `joint_interval_sec` 当前为 900 秒（现实时间）；新想定、蓝方兵力变化、敌方威胁类别首次出现或完全消失会立即刷新，其余规划轮次沿用方案。重启程序会重新调用联合指挥。终端打印刷新原因和跳过的 Agent。
+
 ## 新电脑首次部署
 
 ```powershell

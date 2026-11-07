@@ -47,6 +47,8 @@
 | 预警机跑马道生成与 300 km 边界 | `rules/awacs_area.py` |
 | 预警机数量、已有任务与站位间距 | `rules/awacs_deployment.py` |
 | 预警机 Agent 的开局、20 分钟、300 km 威胁及换班触发 | `rules/awacs_triggers.py` |
+| 专业 Agent 是否有可执行任务 | `rules/agent_activation.py` |
+| 联合指挥方案何时刷新 | `rules/joint_refresh.py`；缓存位于运行中的规划器 |
 | 海军仅开局创建巡逻任务 | `rules/navy_patrol.py` |
 | 自动推演轮次与去重 | `runtime/app/daemon.py` |
 | 孤立区域清理 | `runtime/execution/area_cleanup.py` |

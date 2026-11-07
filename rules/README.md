@@ -7,6 +7,8 @@
 | `awacs_area.py` | 识别预警机并选择最近蓝方机场/航母，按预警机 Agent 的轴向和前推距离生成跑马道，校验全部区域点在 300 km 内 |
 | `awacs_deployment.py` | 读取本项目已有预警任务的站位，限制同时最多两架，并按当前战场跨度计算双机最小间距 |
 | `awacs_triggers.py` | 根据想定时间、预警机起降状态与敌机距离，决定何时调用预警机 Agent；校验开局、区域调整、回撤与换班 |
+| `agent_activation.py` | 无本 Agent 单元、无可用 Skill、全是打击 Skill 却无对应实时接触时，跳过专业 Agent 模型调用 |
+| `joint_refresh.py` | 联合指挥方案的战略变化快照：新想定、蓝方兵力变化、威胁类别出现或消失时立即刷新；其余情况受刷新间隔控制 |
 | `navy_patrol.py` | 舰艇海上巡逻仅在想定开局可调用 |
 
 新增规则先写成独立函数，再由 `runtime/planning/` 或 `runtime/app/` 调用。`runtime/planning/validation.py` 保留所有任务共用的 GUID、军种归属、目标类别和重复分配校验。固定脚本只执行已经校验的任务参数。
