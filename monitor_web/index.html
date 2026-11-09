@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101b2f">
+  <title>墨子 · Agent 运行监控</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark">墨</div><div><strong>墨子任务调度</strong><span>AGENT OBSERVATORY</span></div></div>
+      <div class="side-label">监控中心</div>
+      <div class="side-active"><span class="side-active-icon">◉</span> Agent 输入输出 <span class="side-arrow">›</span></div>
+      <div class="side-divider"></div>
+      <div class="side-label">推演场次 <span id="sessionCount" class="muted">0</span></div>
+      <div id="sessionList" class="session-list" aria-label="历史推演场次"></div>
+      <div class="sidebar-bottom"><span class="live-pulse"></span><span>本地只读监控</span><small>数据仅保存在当前电脑</small></div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar"><div class="breadcrumbs">监控中心 <span>/</span> <strong>Agent 输入输出</strong></div><div class="top-actions"><span id="connection" class="connection"><i></i>连接中</span><button id="refreshBtn" class="icon-button" type="button" title="立即刷新" aria-label="立即刷新">↻</button></div></header>
+      <div class="content">
+        <div class="heading"><div><div class="eyebrow">MISSION INTELLIGENCE / 任务观察台</div><h1>Agent 运行监控</h1><p>联合指挥到各军种的每一次决策，都能回看输入、输出与执行耗时。</p></div><div class="heading-action"><button id="exportBtn" class="secondary-button" type="button">↓ 导出当前场次</button></div></div>
+
+        <section class="session-hero" aria-label="当前推演场次"><div class="session-hero-main"><div class="hero-kicker"><span class="hero-dot"></span> 当前查看场次</div><div id="activeSession" class="hero-title">等待记录</div><div id="activeScenario" class="hero-subtitle">启动推演后，这里会显示 Agent 调用记录。</div></div><div class="hero-right"><span id="sessionTime">—</span><small>历史记录持续保留</small></div></section>
+
+        <section class="metrics" aria-label="场次统计">
+          <div class="metric"><span>模型调用</span><strong id="metricCalls">0</strong><small>本场次累计</small></div>
+          <div class="metric"><span>运行中</span><strong id="metricRunning">0</strong><small>等待模型回复</small></div>
+          <div class="metric"><span>调用错误</span><strong id="metricErrors">0</strong><small>可展开查看原因</small></div>
+          <div class="metric"><span>规则跳过</span><strong id="metricSkips">0</strong><small>没有请求模型</small></div>
+        </section>
+
+        <section class="monitor-layout">
+          <div class="feed-panel">
+            <div class="panel-head"><div><h2>决策时间线</h2><p>按最近事件排序 · 每 2 秒自动刷新</p></div><div id="recordCount" class="count-badge">0 条</div></div>
+            <div class="filters"><div id="agentFilters" class="agent-filters" aria-label="Agent 筛选"></div><div class="filter-row"><label class="search-wrap"><span>⌕</span><input id="searchInput" type="search" placeholder="搜索方案、任务或错误" aria-label="搜索记录"></label><select id="statusFilter" aria-label="状态筛选"><option value="all">全部状态</option><option value="output">成功输出</option><option value="error">调用错误</option><option value="input">运行中</option><option value="skip">规则跳过</option><option value="cache">复用方案</option></select></div></div>
+            <div id="timeline" class="timeline" aria-live="polite"></div>
+            <div class="feed-foot"><button id="olderBtn" class="text-button" type="button" hidden>加载更早记录 ↑</button><span id="feedHint">—</span></div>
+          </div>
+
+          <div class="detail-panel"><div class="panel-head detail-head"><div><h2>调用详情</h2><p id="detailSubtitle">选择左侧记录查看完整内容</p></div><button id="copyBtn" class="icon-button" type="button" title="复制当前详情" aria-label="复制当前详情">⧉</button></div><div id="detailMeta" class="detail-meta"></div><div id="detailTabs" class="detail-tabs" role="tablist" aria-label="详情类型"><button data-tab="input" class="active" type="button">输入</button><button data-tab="output" type="button">输出</button><button data-tab="raw" type="button">原始回复</button><button data-tab="error" type="button">错误</button></div><div class="code-toolbar"><span id="codeTitle">INPUT / JSON</span><span id="codeSize">—</span></div><pre id="detailCode" class="detail-code" tabindex="0">选择一条记录查看完整输入与输出。</pre></div>
+        </section>
+        <footer>本地监控界面只读取 <code>runs/agent_monitor/events.jsonl</code>。关闭页面后仍可回看历史。</footer>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

@@ -4,6 +4,30 @@
 
 直接在 VS Code 中运行 `run.py`（不带参数）启动自动推演：持续读取墨子态势，调用联合指挥、空军、预警机、海军、陆军 Agent，校验 Skill 参数并自动执行固定脚本。按 Ctrl+C 停止。当前轮处理耗时会打印在控制台；已创建任务记在 `runs/automatic_state.json`，避免重复创建。新电脑先修改 `config/deployment.json` 中的墨子主机、端口、API 地址和自动任务目标，再运行 `python -m pip install -r requirements.txt`。
 
+## 监控所有 Agent 的输入输出
+
+在**另一个终端**运行 `python monitor_agents.py`。程序先显示最近 10 条事件，再持续显示新事件；按 Ctrl+C 只停止监控，不停止自动推演。事件包括五个 Agent 发送给模型的完整 system prompt 与 context、模型原始回复与解析后的 JSON、耗时、token 用量和调用错误。联合指挥复用缓存、军种 Agent 被规则跳过时也会记录原因；这两类事件没有模型请求。
+
+```powershell
+python .\monitor_agents.py
+python .\monitor_agents.py --summary              # 精简查看
+python .\monitor_agents.py --agent component_awacs # 只看预警机
+python .\monitor_agents.py --last 50 --once        # 查看历史后退出
+```
+
+记录写入 `runs/agent_monitor/events.jsonl`，每行一个 UTF-8 JSON 事件；`config/llm.json` 的 `log_dir` 可改保存目录。日志只在本机，已被 `.gitignore` 排除；其中包含完整态势、提示词和模型输出，但不包含 API 密钥或请求头。若要从启动时就看到输入，先开监控终端再启动 `run.py`。
+
+### 独立网页监控前端
+
+双击根目录的 `启动Agent监控前端.cmd`，或在另一个终端运行 `python monitor_dashboard.py`，浏览器会打开 `http://127.0.0.1:8765/`。网页可以按推演场次、Agent、状态和关键词筛选，查看完整输入、结构化输出、原始回复与错误，显示调用耗时，并导出**所选场次的全部事件**为 JSONL。网页每 2 秒读取新增记录；它只读取本地日志，不连接模型，也不创建或修改墨子任务。
+
+网页和推演可以分别启动、停止。推演结束后重新运行 `monitor_dashboard.py`，左侧仍能选历史场次；日志不会因关闭网页或 `run.py` 而删除。每次启动推演程序会产生新的场次 ID，并记录想定名称和轮次。将整个项目复制到另一台电脑时，把 `runs/agent_monitor/` 一并复制才会带上历史记录。默认仅监听本机 `127.0.0.1`，不会向局域网开放。
+
+```powershell
+python .\monitor_dashboard.py
+python .\monitor_dashboard.py --port 8766 --no-browser
+```
+
 自动推演会先校验本轮全部任务，再按 `config/deployment.json` 的 `script_parallelism` 并行执行独立任务脚本，默认最多 **2** 个；设为 `1` 可恢复串行，允许范围为 1～4。每个任务内部仍按创建区域、创建/更新任务、分配单位、回读的顺序调用墨子 API。并行任务各自记录成功或失败；某项失败不抹掉其他已成功任务的状态，孤立区域清理在本批全部脚本结束后运行。手动/直接批量执行入口仍保持串行。
 
 执行器要求脚本返回有效 JSON、任务 GUID 和报告文件。若执行阶段结果不确定，任务会记入 `runs/automatic_state.json` 的 `uncertain`，自动推演不会重试该同名任务；先在墨子中核对是否已创建，再处理该记录。任务脚本只由 PowerShell 7 执行。
@@ -24,7 +48,13 @@
 
 五个 Agent 的提示词分别放在根目录 `prompts/`，Agent 角色和模型客户端放在 `agents/`，规划编排在 `runtime/planning/`。实际模型配置在 `config/llm.json`。运行 `python run.py agent-status` 可查看模型、Agent 和密钥环境变量是否已配置。目录职责详见 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)。
 
-专业 Agent 调用前先由 `rules/agent_activation.py` 检查本军种单元、当前可用 Skill 和打击任务所需的实时接触；无可执行任务则直接待命，不请求模型。巡逻等无需敌方接触的 Skill 不因无接触而跳过。联合指挥方案在进程内缓存，`config/llm.json` 的 `joint_interval_sec` 当前为 900 秒（现实时间）；新想定、蓝方兵力变化、敌方威胁类别首次出现或完全消失会立即刷新，其余规划轮次沿用方案。重启程序会重新调用联合指挥。终端打印刷新原因和跳过的 Agent。
+专业 Agent 调用前先由 `rules/agent_activation.py` 检查本军种单元、当前可用 Skill 和打击任务所需的实时接触；无可执行任务则直接待命，不请求模型。巡逻等无需敌方接触的 Skill 不因无接触而跳过。联合指挥方案在进程内缓存，`config/llm.json` 的 `joint_interval_sec` 当前为 900 秒（现实时间）；新想定、蓝方兵力变化、敌方威胁类别出现/消失或威胁距离段跨越会立即刷新，其余规划轮次沿用方案。重启程序会重新调用联合指挥。终端打印刷新原因和跳过的 Agent。
+
+### 跨轮态势记忆
+
+`rules/situation_memory.py` 每 10 秒轮询时用确定性代码更新目标位置采样、接近/远离蓝方的趋势、距离段变化、最近已校验方案和任务脚本下发结果，保存在 `runs/automatic_state.json`；重启 `run.py` 后继续使用同一想定的历史。送给联合指挥和专业 Agent 的是有固定上限的精简视图，不是完整监控日志，也不需要额外模型调用。想定时间倒退时会清除上一局轨迹及联合方案缓存。历史目标只供分析，打击任务仍必须使用本轮实时 `contacts`。历史方案只是意图；脚本创建成功/失败也不等于战果或目标毁伤。
+
+`rules/situation_refresh.py` 让同 GUID 敌方接触移动至少 40 km 且距上次规划至少 30 秒现实时间，或跨越 300/150/75 km 威胁距离段时提前重评。联合指挥只在战略距离段变化等关键事件上立即刷新；普通位移由相应专业 Agent 使用当前态势和历史趋势评估。阈值、采样上限及规则注释集中在 `rules/`。
 
 ## 新电脑首次部署
 
@@ -87,7 +117,7 @@ Agent 的输出只是 `skill_calls`。它不写 PowerShell、不拼 API、不实
 | 固定脚本执行层 | 已校验的 Skill 调用 | 墨子区域、任务、目标和单位分配 |
 | 回读与状态层 | 墨子执行响应与任务详情 | 任务 GUID、审计报告、下一轮去重和触发状态 |
 
-联合指挥和各任务 Agent 每次调用本身是独立推理；跨轮连续性由 `runs/automatic_state.json`、墨子中仍存在的任务以及执行报告提供。程序重启后会按想定身份恢复本项目创建且仍存在的任务，避免把 LLM 对话历史无限塞入上下文。
+联合指挥和各任务 Agent 每次调用本身是独立推理；跨轮连续性由 `runs/automatic_state.json` 中的精简态势记忆及任务状态、墨子中仍存在的任务和执行报告提供。程序重启后会按想定身份恢复本项目创建且仍存在的任务，避免把 LLM 对话历史无限塞入上下文。
 
 程序内部接入时，上层只需调用稳定入口：
 

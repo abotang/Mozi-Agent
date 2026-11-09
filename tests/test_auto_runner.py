@@ -184,6 +184,7 @@ class AutoRunnerTests(unittest.TestCase):
             state = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertEqual(executor.executions, 1)
         self.assertIn("蓝方-北区战斗巡逻", state["uncertain"])
+        self.assertEqual(state["situation_memory"]["outcomes"][-1]["status"], "uncertain")
 
     def test_shows_agent_plan_before_validation_error(self):
         registry = SkillRegistry(ROOT / "skills").load()
@@ -258,6 +259,7 @@ class AutoRunnerTests(unittest.TestCase):
         self.assertEqual(executor.executions, 1)
         self.assertEqual(executor.validations, 1)
         self.assertIn("蓝方-北区战斗巡逻", state["missions"])
+        self.assertEqual(state["situation_memory"]["outcomes"][-1]["status"], "created")
 
     def test_independent_tasks_execute_concurrently_after_full_preflight(self):
         registry = SkillRegistry(ROOT / "skills").load()
@@ -344,6 +346,89 @@ class AutoRunnerTests(unittest.TestCase):
         self.assertIn("蓝方-南区战斗巡逻", state["missions"])
         self.assertIn("蓝方-北区战斗巡逻", state["uncertain"])
         self.assertIn("1 项任务执行失败", "\n".join(lines))
+
+    def test_contact_movement_wakes_agent_and_memory_survives_restart(self):
+        registry = SkillRegistry(ROOT / "skills").load()
+        template = json.loads((ROOT / "examples/situation.example.json").read_text(encoding="utf-8"))
+        template["units"]["air"] = [row for row in template["units"]["air"]
+                                     if "预警" not in row["name"]]
+        template["scenario"]["initial_time"] = "2026-06-05 08:00:00"
+        now = [0]
+        counter = [0]
+
+        def collect():
+            index = counter[0]
+            counter[0] += 1
+            now[0] = index * 10
+            current = json.loads(json.dumps(template))
+            current["scenario"]["start_time"] = f"2026-06-05 08:{index:02d}:00"
+            current["contacts"]["sea"][0]["lon"] = 140 if index == 0 else 139.5
+            return current
+
+        class Planner:
+            memories = []
+
+            def plan(self, situation, _instruction):
+                self.memories.append(situation["situation_memory"])
+                return {"version": 1, "summary": "观察态势", "skill_calls": []}
+
+        planner = Planner()
+        lines = []
+        with TemporaryDirectory(dir=ROOT) as folder:
+            state_path = Path(folder) / "state.json"
+            runner = AutomaticMissionRunner(
+                collector=collect, planner=planner, registry=registry,
+                compiler=PlanCompiler(registry, ROOT / "scripts/powershell", folder),
+                executor=object(), state_path=state_path, sleep=lambda _: None,
+                clock=lambda: now[0], output=lines.append)
+            runner.run("观察", max_cycles=5)
+            recovered = AutomaticMissionRunner(
+                collector=collect, planner=planner, registry=registry,
+                compiler=PlanCompiler(registry, ROOT / "scripts/powershell", folder),
+                executor=object(), state_path=state_path)
+        self.assertEqual(len(planner.memories), 2)
+        self.assertIn("移动", "\n".join(lines))
+        self.assertTrue(any(item["approach_km"] > 0 for item in
+                            planner.memories[-1]["active_contact_trends"]
+                            if item["group"] == "sea"))
+        self.assertTrue(recovered.state["situation_memory"]["tracks"])
+
+    def test_simulation_rewind_clears_joint_cache_and_forces_replan(self):
+        registry = SkillRegistry(ROOT / "skills").load()
+        template = json.loads((ROOT / "examples/situation.example.json").read_text(encoding="utf-8"))
+        template["units"]["air"] = [row for row in template["units"]["air"]
+                                     if "预警" not in row["name"]]
+        template["scenario"]["initial_time"] = "2026-06-05 08:00:00"
+        counter = [0]
+
+        def collect():
+            current = json.loads(json.dumps(template))
+            current["scenario"]["start_time"] = (
+                "2026-06-05 08:05:00" if counter[0] == 0 else "2026-06-05 08:00:00")
+            counter[0] += 1
+            return current
+
+        class Planner:
+            calls = 0
+            resets = 0
+
+            def plan(self, *_):
+                self.calls += 1
+                return {"version": 1, "summary": "观察", "skill_calls": []}
+
+            def reset_cached_directive(self):
+                self.resets += 1
+
+        planner = Planner()
+        with TemporaryDirectory(dir=ROOT) as folder:
+            runner = AutomaticMissionRunner(
+                collector=collect, planner=planner, registry=registry,
+                compiler=PlanCompiler(registry, ROOT / "scripts/powershell", folder),
+                executor=object(), state_path=Path(folder) / "state.json",
+                sleep=lambda _: None, clock=lambda: 0, output=lambda _: None)
+            runner.run("观察", max_cycles=2)
+        self.assertEqual(planner.calls, 2)
+        self.assertEqual(planner.resets, 1)
 
 
 if __name__ == "__main__":

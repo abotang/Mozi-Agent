@@ -8,9 +8,13 @@ import math
 import os
 from pathlib import Path
 import threading
+import time
+from uuid import uuid4
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler
+
+from agents.monitor_log import AgentTraceWriter
 
 
 class ModelError(RuntimeError):
@@ -128,6 +132,15 @@ class ChatCompletionClient:
         self._usage = {}
         self._diagnostic_lock = threading.RLock()
         self._diagnostics = {}
+        self._trace = AgentTraceWriter(config.log_dir)
+
+    def trace_event(self, role: str, event: str, **details):
+        """记录规则跳过与联合方案缓存等未发起模型请求的决策。"""
+        self._trace.write({"agent": role, "event": event, **details})
+
+    def set_trace_scope(self, **values):
+        """在自动推演中标记想定、轮次；新进程自动获得新的监控场次。"""
+        self._trace.set_scope(**values)
 
     def clear_diagnostics(self):
         """开始新一轮前清空模型痕迹，避免把上一轮输出误记到本轮。"""
@@ -162,12 +175,31 @@ class ChatCompletionClient:
         joint = role == "joint"
         model = (self.config.joint_model if joint else self.config.component_model)
         selected_model = model or self.config.model
-        result = parse_object(self._complete(
-            system, context, json_output=True,
-            model=selected_model,
-            max_tokens=(self.config.joint_max_tokens if joint
-                        else self.config.component_max_tokens),
-            usage_key=role))
+        call_id = uuid4().hex
+        started = time.monotonic()
+        self.trace_event(role, "input", call_id=call_id, model=selected_model,
+                         input={"system": system,
+                                "context": deepcopy(self._cache_ordered_context(context))})
+        raw = None
+        try:
+            raw = self._complete(
+                system, context, json_output=True,
+                model=selected_model,
+                max_tokens=(self.config.joint_max_tokens if joint
+                            else self.config.component_max_tokens),
+                usage_key=role)
+            result = parse_object(raw)
+        except Exception as exc:
+            self.trace_event(role, "error", call_id=call_id, model=selected_model,
+                             duration_sec=round(time.monotonic() - started, 3),
+                             raw_output=raw,
+                             error={"type": type(exc).__name__, "message": str(exc)})
+            raise
+        with self._usage_lock:
+            usage = deepcopy(self._usage.get(role))
+        self.trace_event(role, "output", call_id=call_id, model=selected_model,
+                         duration_sec=round(time.monotonic() - started, 3),
+                         raw_output=raw, output=deepcopy(result), usage=usage)
         serialized_context = json.dumps(self._cache_ordered_context(context), ensure_ascii=False,
                                         allow_nan=False, separators=(",", ":"), sort_keys=True)
         context_key_chars = {

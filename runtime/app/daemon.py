@@ -18,6 +18,9 @@ from runtime.planning.validation import validate_plan
 from rules.awacs_deployment import enrich_existing_mission, minimum_separation_km
 from rules.awacs_triggers import next_trigger, opening_signature, record_success
 from rules.navy_patrol import opening_allowed, suppress_late_calls
+from rules.situation_memory import (memory_brief, record_dispatch_outcome,
+                                    record_plan, scenario_rewound, update_memory)
+from rules.situation_refresh import contact_snapshot, tactical_refresh_reason
 
 
 def _signature(situation: dict) -> str:
@@ -90,11 +93,13 @@ class AutomaticMissionRunner:
                     if not isinstance(value.get("navy_patrol_opening_done"), bool):
                         value["navy_patrol_opening_done"] = bool(value["missions"] or value["uncertain"])
                     value.setdefault("awacs_flights", {})
+                    value.setdefault("situation_memory", {})
                     return value
             except (OSError, ValueError):
                 pass
         return {"scenario": "", "missions": {}, "uncertain": {},
-                "navy_patrol_opening_done": False, "awacs_flights": {}}
+                "navy_patrol_opening_done": False, "awacs_flights": {},
+                "situation_memory": {}}
 
     def _save_state(self):
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -110,7 +115,8 @@ class AutomaticMissionRunner:
                              str(situation["scenario"].get("name", ""))))
         if self.state["scenario"] != scenario:
             self.state = {"scenario": scenario, "missions": {}, "uncertain": {},
-                          "navy_patrol_opening_done": False, "awacs_flights": {}}
+                          "navy_patrol_opening_done": False, "awacs_flights": {},
+                          "situation_memory": {}}
             self._recover_missions(situation)
             self.state["navy_patrol_opening_done"] = bool(self.state["missions"])
             self._save_state()
@@ -179,6 +185,7 @@ class AutomaticMissionRunner:
     def run(self, instruction: str, *, max_cycles: int | None = None):
         last_signature = None
         last_planned_at = -float("inf")
+        last_planned_contacts = None
         cycles = 0
         self.output("自动推演已启动；按 Ctrl+C 停止。")
         while max_cycles is None or cycles < max_cycles:
@@ -189,6 +196,22 @@ class AutomaticMissionRunner:
                 situation = self.collector()
                 stage = "核对已有任务"
                 self._reconcile(situation)
+                if scenario_rewound(self.state.get("situation_memory"), situation):
+                    reset_directive = getattr(self.planner, "reset_cached_directive", None)
+                    if callable(reset_directive):
+                        reset_directive()
+                    last_signature = None
+                    last_planned_contacts = None
+                    last_planned_at = -float("inf")
+                    self.output(f"[第 {cycles} 轮] 想定时间倒退：清空上一局态势记忆与联合方案缓存")
+                # 每次轮询先归纳态势；即使本轮不调用模型，轨迹也连续保存。
+                memory = update_memory(self.state.get("situation_memory"), situation)
+                self.state["situation_memory"] = memory
+                situation["situation_memory"] = memory_brief(memory)
+                situation["_service_situation_memory"] = {
+                    owner: memory_brief(memory, owner)
+                    for owner in ("air", "awacs", "navy", "army")
+                }
                 situation["existing_missions"] = [
                     enrich_existing_mission(name, record)
                     for name, record in self.state["missions"].items()
@@ -203,19 +226,30 @@ class AutomaticMissionRunner:
                     "awacs_trigger": awacs_trigger,
                 }
                 signature = _signature(situation)
+                current_contacts = contact_snapshot(situation)
+                tactical_reason = tactical_refresh_reason(
+                    last_planned_contacts, current_contacts, started - last_planned_at)
                 if (signature == last_signature
-                        and started - last_planned_at < self.replan_interval_sec
-                        and awacs_trigger["kind"] == "hold"):
+                         and started - last_planned_at < self.replan_interval_sec
+                         and awacs_trigger["kind"] == "hold" and not tactical_reason):
                     self.sleep(self.poll_interval_sec)
                     continue
                 last_signature = signature
                 last_planned_at = started
+                last_planned_contacts = current_contacts
+                if tactical_reason:
+                    self.output(f"[第 {cycles} 轮] 态势变化触发重评：{tactical_reason}")
                 self.output(f"[第 {cycles} 轮] 蓝方态势：飞机 {len(situation['units']['air'])}，"
                             f"海军 {len(situation['units']['navy'])}，"
                             f"潜艇 {len(situation['units'].get('submarine', []))}（暂未接入），"
                             f"接触 {sum(len(rows) for rows in situation['contacts'].values())}")
                 for attempt in range(2):
                     stage = "联合指挥与军种 Agent 规划"
+                    set_monitor_context = getattr(self.planner, "set_monitor_context", None)
+                    if callable(set_monitor_context):
+                        set_monitor_context(scenario_key=self.state["scenario"],
+                                            scenario_name=situation["scenario"].get("name", ""),
+                                            cycle=cycles, attempt=attempt + 1)
                     request = instruction
                     if attempt:
                         request += ("\n上一版任务方案校验失败：" + conflict_message
@@ -262,6 +296,8 @@ class AutomaticMissionRunner:
                             raise
                         conflict_message = str(exc)
                         self.output(f"[第 {cycles} 轮] {conflict_message}；立即请 Agent 重规划一次")
+                record_plan(memory, plan, situation["scenario"]["start_time"])
+                self._save_state()
                 if navy_patrol_allowed:
                     self.state["navy_patrol_opening_done"] = True
                     self._save_state()
@@ -329,15 +365,30 @@ class AutomaticMissionRunner:
                                 }
                                 if item.call.skill_id == "air.early_warning":
                                     record_success(self.state, item.call, guid)
+                                record_dispatch_outcome(
+                                    memory, situation["scenario"]["start_time"],
+                                    item.call.mission_name, item.call.skill_id,
+                                    "updated" if item.call.existing_mission_guid else "created",
+                                    guid)
                                 self._save_state()
                                 self.output(f"已{'更新' if item.call.existing_mission_guid else '创建'}：{item.call.mission_name} ({guid})")
                             except ScriptExecutionError as exc:
-                                if any(result.phase == "execute" for result in exc.results):
+                                uncertain = any(result.phase == "execute" for result in exc.results)
+                                if uncertain:
                                     self._mark_uncertain(item, str(exc))
+                                record_dispatch_outcome(memory, situation["scenario"]["start_time"],
+                                                        item.call.mission_name, item.call.skill_id,
+                                                        "uncertain" if uncertain else "failed",
+                                                        str(exc))
+                                self._save_state()
                                 failures.append(f"{item.call.mission_name}: {exc}")
                                 self.output(f"创建失败：{item.call.mission_name}：{exc}")
                             except Exception as exc:
                                 self._mark_uncertain(item, str(exc))
+                                record_dispatch_outcome(memory, situation["scenario"]["start_time"],
+                                                        item.call.mission_name, item.call.skill_id,
+                                                        "uncertain", str(exc))
+                                self._save_state()
                                 failures.append(f"{item.call.mission_name}: {exc}")
                                 self.output(f"创建结果未确认：{item.call.mission_name}：{exc}")
                     if failures:

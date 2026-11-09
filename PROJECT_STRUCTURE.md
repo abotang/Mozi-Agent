@@ -7,6 +7,10 @@
 ```text
 重构版_脚本Skill任务调度架构/
 ├─ run.py                 启动入口
+├─ monitor_agents.py      独立终端实时监控 Agent 输入输出
+├─ monitor_dashboard.py   独立本地网页监控入口
+├─ 启动Agent监控前端.cmd   Windows 双击启动网页监控
+├─ monitor_web/           网页、样式、交互及只读 HTTP 服务
 ├─ prompts/               五个 Agent 的可编辑提示词
 │  ├─ joint.md            联合指挥
 │  ├─ air.md              空军
@@ -42,6 +46,8 @@
 | 联合指挥、空军、预警机、海军、陆军的判断要求 | `prompts/joint.md`、`air.md`、`awacs.md`、`navy.md`、`army.md` |
 | 墨子连接地址、自动推演间隔 | `config/deployment.json` |
 | 模型、接口与密钥读取方式 | `config/llm.json`、`agents/model_client.py` |
+| Agent 输入输出监控 | `monitor_agents.py`、`runtime/app/agent_monitor.py`、`agents/monitor_log.py` |
+| 历史推演网页监控 | `monitor_dashboard.py`、`monitor_web/`；日志位于 `runs/agent_monitor/` |
 | Skill 的规划 Agent 归属 | `skill.json` 中的 `agent_owner`；省略时归所属军种 Agent |
 | 某类任务的适用条件和参数 | `skills/<军种>/<任务>/skill.json` 与 `SKILL.md` |
 | 任务创建时调用墨子 API 的步骤 | `scripts/powershell/Invoke-MoziBlueMissionPlan.ps1` |
@@ -51,6 +57,7 @@
 | 预警机 Agent 的开局、20 分钟、300 km 威胁及换班触发 | `rules/awacs_triggers.py` |
 | 专业 Agent 是否有可执行任务 | `rules/agent_activation.py` |
 | 联合指挥方案何时刷新 | `rules/joint_refresh.py`；缓存位于运行中的规划器 |
+| 关键态势历史及提前重评 | `rules/situation_memory.py`、`rules/situation_refresh.py`；压缩历史保存在 `runs/automatic_state.json` |
 | 海军仅开局创建巡逻任务 | `rules/navy_patrol.py` |
 | 自动推演轮次与去重 | `runtime/app/daemon.py` |
 | 孤立区域清理 | `runtime/execution/area_cleanup.py` |

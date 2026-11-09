@@ -13,5 +13,6 @@
   "component_max_tokens": 4096,
   "joint_interval_sec": 900,
   "component_parallelism": 4,
+  "log_dir": "../runs/agent_monitor",
   "enable_thinking": false
 }

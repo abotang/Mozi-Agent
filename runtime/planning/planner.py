@@ -20,6 +20,7 @@ from rules.awacs_deployment import minimum_separation_km
 from rules.navy_patrol import available_skills
 from rules.agent_activation import skip_reason
 from rules.joint_refresh import refresh_reason, strategic_snapshot
+from rules.situation_memory import filter_brief
 
 
 class HierarchicalSkillPlanner:
@@ -41,6 +42,15 @@ class HierarchicalSkillPlanner:
     @classmethod
     def from_config(cls, path, registry: SkillRegistry):
         return cls(AgentConfig.load(path), registry)
+
+    def set_monitor_context(self, **values):
+        setter = getattr(self.client, "set_trace_scope", None)
+        if callable(setter):
+            setter(**values)
+
+    def reset_cached_directive(self):
+        """想定时间倒退时清除上一局的联合方案缓存。"""
+        self._joint_cache = None
 
     @staticmethod
     def _joint(raw: dict[str, Any]) -> dict[str, Any]:
@@ -104,7 +114,8 @@ class HierarchicalSkillPlanner:
             joint_context = {
                 "objective": self.config.objective,
                 "instruction": joint_instruction,
-                "situation": deepcopy(situation),
+                "situation": deepcopy({key: value for key, value in situation.items()
+                                       if key != "_service_situation_memory"}),
                 "available_task_skills": {
                     owner: ([] if skips[owner] else catalogs[owner])
                     for owner in AGENT_OWNERS
@@ -115,11 +126,22 @@ class HierarchicalSkillPlanner:
                                  "at": now, "directive": deepcopy(directive)}
         else:
             directive = deepcopy(self._joint_cache["directive"])
+            trace = getattr(self.client, "trace_event", None)
+            if callable(trace):
+                trace("joint", "cache", reason="联合方案尚在复用期且无关键态势变化",
+                      output=deepcopy(directive))
 
         def decide(owner: str) -> dict[str, Any]:
             if skips[owner]:
-                return {"version": 1, "service": owner,
-                        "summary": f"待命：{skips[owner]}", "skill_calls": []}
+                proposal = {"version": 1, "service": owner,
+                            "summary": f"待命：{skips[owner]}", "skill_calls": []}
+                trace = getattr(self.client, "trace_event", None)
+                if callable(trace):
+                    trace(f"component_{owner}", "skip", reason=skips[owner],
+                          input={"own_units": deepcopy(own_unit_rows[owner]),
+                                 "task_skills": deepcopy(catalogs[owner])},
+                          output=deepcopy(proposal))
+                return proposal
             context = {
                 "objective": self.config.objective,
                 "instruction": instruction,
@@ -135,6 +157,10 @@ class HierarchicalSkillPlanner:
                 "existing_areas": deepcopy(situation.get("existing_areas", [])),
                 "task_skills": catalogs[owner],
             }
+            if situation.get("situation_memory"):
+                context["situation_memory"] = deepcopy(
+                    (situation.get("_service_situation_memory") or {}).get(owner)
+                    or filter_brief(situation["situation_memory"], owner))
             proposal = self._component(self.service_agents[owner].decide(context), owner)
             proposal["skill_calls"] = normalize_plan({
                 "version": 1, "skill_calls": proposal["skill_calls"]

@@ -9,18 +9,21 @@ sys.path.insert(0, str(ROOT))
 from agents.model_client import AgentConfig
 from runtime.planning.planner import HierarchicalSkillPlanner
 from runtime.skills.registry import SkillRegistry
+from rules.situation_memory import memory_brief, update_memory
 
 
 class RecordingClient:
     def __init__(self):
         self.roles = []
         self.joint_contexts = []
+        self.service_contexts = {}
 
     def plan(self, role, _system, context):
         self.roles.append(role)
         if role == "joint":
             self.joint_contexts.append(context)
             return {"version": 1, "mission_intents": [], "main_effort": "防御"}
+        self.service_contexts[role] = context
         return {"version": 1, "service": role.removeprefix("component_"),
                 "summary": "待命", "skill_calls": []}
 
@@ -64,7 +67,7 @@ class AgentActivationAndJointRefreshTests(unittest.TestCase):
         self.client.roles.clear()
         self.now = 200
         self.situation["contacts"]["air"].append({
-            "guid": "dddddddd-0000-0000-0000-000000000099", "lat": 21, "lon": 132})
+            "guid": "dddddddd-0000-0000-0000-000000000099", "lat": 23, "lon": 132})
         second = self.plan()
         self.assertEqual(second["joint_source"], "cache")
         self.assertNotIn("joint", self.client.roles)
@@ -94,6 +97,20 @@ class AgentActivationAndJointRefreshTests(unittest.TestCase):
         plan = self.plan()
         self.assertEqual(self.client.roles, ["joint"])
         self.assertEqual(set(plan["agent_skips"]), {"air", "awacs", "navy", "army"})
+
+    def test_joint_and_services_receive_only_bounded_relevant_memory(self):
+        memory = update_memory({}, self.situation)
+        self.situation["situation_memory"] = memory_brief(memory)
+        self.situation["_service_situation_memory"] = {
+            owner: memory_brief(memory, owner) for owner in ("air", "awacs", "navy", "army")}
+        self.plan()
+        joint_situation = self.client.joint_contexts[0]["situation"]
+        self.assertIn("situation_memory", joint_situation)
+        self.assertNotIn("_service_situation_memory", joint_situation)
+        navy_memory = self.client.service_contexts["component_navy"]["situation_memory"]
+        self.assertTrue(navy_memory["active_contact_trends"])
+        self.assertTrue(all(item["group"] in {"sea", "air"}
+                            for item in navy_memory["active_contact_trends"]))
 
 
 if __name__ == "__main__":
