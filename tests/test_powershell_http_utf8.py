@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from runtime.skills.compiler import PlanCompiler
-from runtime.execution.executor import PowerShellMissionExecutor
+from runtime.execution.executor import PowerShellMissionExecutor, ScriptExecutionError
 from runtime.skills.registry import SkillRegistry
 from runtime.planning.validation import validate_plan
 
@@ -52,12 +52,18 @@ class PowerShellUtf8Tests(unittest.TestCase):
                 else:
                     if body.get("type") == "PatrolMissionRules":
                         self.server.last_otr = body["Rules"]["OTR"]
+                    if body.get("type") == "SupportMissionRules":
+                        self.server.last_support_alt = body["Rules"]["StationAltitude_Aircraft"]
                     self.respond({})
 
             def do_GET(self):
                 self.respond({"patrolmissionData": {
                     "PatrolArea": [1, 2, 3], "OTR": getattr(self.server, "last_otr", False)},
-                    "supportmissionData": {"area": [1, 2, 3]}})
+                    "supportmissionData": {
+                        "area": [1, 2, 3],
+                        "StationAltitude_Aircraft": getattr(
+                            self.server, "support_alt_override",
+                            getattr(self.server, "last_support_alt", "未定"))}})
 
         try:
             server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -129,6 +135,9 @@ class PowerShellUtf8Tests(unittest.TestCase):
                                                  folder).compile(relief_calls, situation, "relief")
                 executor.execute(relief_invocation, dry_run=True)
                 executor.execute_prevalidated(relief_invocation[0])
+                server.support_alt_override = "2"
+                with self.assertRaisesRegex(ScriptExecutionError, "预警阵位高度回读不是10000米"):
+                    executor.execute_prevalidated(relief_invocation[0])
             self.assertTrue(results[-1].success, results[-1].stderr)
             area_posts = [item for item in Handler.requests if item[0].endswith("/ScenArea")]
             self.assertEqual(len(area_posts), 3)
@@ -144,8 +153,10 @@ class PowerShellUtf8Tests(unittest.TestCase):
             self.assertEqual(patrol_rules, [True, False])
             support_rules = [item[2]["Rules"] for item in Handler.requests
                              if item[2].get("type") == "SupportMissionRules"]
-            self.assertEqual(len(support_rules), 2)
+            self.assertEqual(len(support_rules), 3)
             self.assertTrue(support_rules[0]["OTR"])
+            self.assertEqual([rule["StationAltitude_Aircraft"] for rule in support_rules],
+                             ["10000", "10000", "10000"])
             operations = [item[2]["type"] for item in Handler.requests
                           if item[2].get("type") in ("UnAssignUnitToMission", "AssignUnitToMission")]
             self.assertEqual(operations[-2:], ["UnAssignUnitToMission", "AssignUnitToMission"])

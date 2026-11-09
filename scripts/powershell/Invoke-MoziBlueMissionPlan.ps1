@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [Parameter(Mandatory)]
     [string]$ConfigPath,
@@ -276,7 +276,8 @@ function Set-PatrolRules {
 }
 
 function Set-SupportRules {
-    param([object]$Task, [string]$MissionGuid, [string]$AreaGuid)
+    param([string]$Key, [object]$Task, [string]$MissionGuid, [string]$AreaGuid)
+    $stationAltitude = if ($Key -eq 'airEarlyWarning') { '10000' } else { '2' }
     $response = Invoke-MoziPost 'Mission' @{
         type='SupportMissionRules'; MissionGuid=$MissionGuid
         Rules=@{
@@ -285,7 +286,7 @@ function Set-SupportRules {
             OneTankingCycleOnly=$false; status='1'; FlightSize='1'; AirFuel='0'
             MinAircraftReq='1'; UseFlightSizeHardLimit=$false
             TransitThrottle_Aircraft='2'; TransitAltitude_Aircraft='2'
-            StationThrottle_Aircraft='1'; StationAltitude_Aircraft='2'
+            StationThrottle_Aircraft='1'; StationAltitude_Aircraft=$stationAltitude
         }
     }
     Assert-MoziSuccess $response "任务 $($Task.name) 写入支援规则"
@@ -319,7 +320,7 @@ function Invoke-OneTask {
         }
         $rulesResponse = Set-PatrolRules $Key $Task $mission.guid $area.guid $outbound $onStation
     } elseif ($Task.missionType -eq 'Support') {
-        $rulesResponse = Set-SupportRules $Task $mission.guid $area.guid
+        $rulesResponse = Set-SupportRules $Key $Task $mission.guid $area.guid
     }
 
     # 规则更新可能清空分配，所以分配必须在规则之后。
@@ -346,6 +347,12 @@ function Invoke-OneTask {
         Assert-Condition (@($verify.data.strikeMissionData.targetList).Count -gt 0) "任务 $($Task.name) 未回读到打击目标"
     } elseif ($Task.missionType -eq 'Support') {
         Assert-Condition (@($verify.data.supportmissionData.area).Count -ge 1) "任务 $($Task.name) 未回读到支援区域"
+        if ($Key -eq 'airEarlyWarning') {
+            $altitude = 0.0
+            $reported = [string]$verify.data.supportmissionData.StationAltitude_Aircraft
+            $parsed = [double]::TryParse($reported, [ref]$altitude)
+            Assert-Condition ($parsed -and [math]::Abs($altitude - 10000) -lt 0.5) "任务 $($Task.name) 预警阵位高度回读不是10000米：$reported"
+        }
     }
 
     [ordered]@{
