@@ -278,14 +278,17 @@ function Set-PatrolRules {
 function Set-SupportRules {
     param([string]$Key, [object]$Task, [string]$MissionGuid, [string]$AreaGuid)
     $stationAltitude = if ($Key -eq 'airEarlyWarning') { '10000' } else { '2' }
+    $transitAltitude = if ($Key -eq 'airEarlyWarning') { '2000' } else { '2' }
+    $emissionsOnlyOnStation = ($Key -eq 'airEarlyWarning')
     $response = Invoke-MoziPost 'Mission' @{
         type='SupportMissionRules'; MissionGuid=$MissionGuid
         Rules=@{
             name=[string]$Task.name; startTime=[string]$config.startTime; endTime=[string]$config.endTime
-            area_ID=$AreaGuid; MNOS='1'; OTR=$true; OTO=$false; AEOIPA=$false
+            area_ID=$AreaGuid; MNOS='1'; OTR=$true; OTO=$false
+            AEOIPA=$emissionsOnlyOnStation; AEOOS=$emissionsOnlyOnStation
             OneTankingCycleOnly=$false; status='1'; FlightSize='1'; AirFuel='0'
             MinAircraftReq='1'; UseFlightSizeHardLimit=$false
-            TransitThrottle_Aircraft='2'; TransitAltitude_Aircraft='2'
+            TransitThrottle_Aircraft='2'; TransitAltitude_Aircraft=$transitAltitude
             StationThrottle_Aircraft='1'; StationAltitude_Aircraft=$stationAltitude
         }
     }
@@ -352,6 +355,12 @@ function Invoke-OneTask {
             $reported = [string]$verify.data.supportmissionData.StationAltitude_Aircraft
             $parsed = [double]::TryParse($reported, [ref]$altitude)
             Assert-Condition ($parsed -and [math]::Abs($altitude - 10000) -lt 0.5) "任务 $($Task.name) 预警阵位高度回读不是10000米：$reported"
+            $transitAltitude = 0.0
+            $transitReported = [string]$verify.data.supportmissionData.TransitAltitude_Aircraft
+            $transitParsed = [double]::TryParse($transitReported, [ref]$transitAltitude)
+            Assert-Condition ($transitParsed -and [math]::Abs($transitAltitude - 2000) -lt 0.5) "任务 $($Task.name) 预警出航高度回读不是2000米：$transitReported"
+            $emconReported = [string]$verify.data.supportmissionData.AEOOS
+            Assert-Condition ($emconReported -ieq 'True') "任务 $($Task.name) 未回读到仅在阵位开启电磁辐射：$emconReported"
         }
     }
 

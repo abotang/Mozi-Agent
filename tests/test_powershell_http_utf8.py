@@ -54,6 +54,8 @@ class PowerShellUtf8Tests(unittest.TestCase):
                         self.server.last_otr = body["Rules"]["OTR"]
                     if body.get("type") == "SupportMissionRules":
                         self.server.last_support_alt = body["Rules"]["StationAltitude_Aircraft"]
+                        self.server.last_support_transit = body["Rules"]["TransitAltitude_Aircraft"]
+                        self.server.last_support_emcon = body["Rules"]["AEOOS"]
                     self.respond({})
 
             def do_GET(self):
@@ -63,7 +65,12 @@ class PowerShellUtf8Tests(unittest.TestCase):
                         "area": [1, 2, 3],
                         "StationAltitude_Aircraft": getattr(
                             self.server, "support_alt_override",
-                            getattr(self.server, "last_support_alt", "未定"))}})
+                            getattr(self.server, "last_support_alt", "未定")),
+                        "TransitAltitude_Aircraft": getattr(
+                            self.server, "support_transit_override",
+                            getattr(self.server, "last_support_transit", "未定")),
+                        "AEOOS": getattr(self.server, "support_emcon_override",
+                                          getattr(self.server, "last_support_emcon", False))}})
 
         try:
             server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -138,6 +145,14 @@ class PowerShellUtf8Tests(unittest.TestCase):
                 server.support_alt_override = "2"
                 with self.assertRaisesRegex(ScriptExecutionError, "预警阵位高度回读不是10000米"):
                     executor.execute_prevalidated(relief_invocation[0])
+                server.support_alt_override = "10000"
+                server.support_transit_override = "2"
+                with self.assertRaisesRegex(ScriptExecutionError, "预警出航高度回读不是2000米"):
+                    executor.execute_prevalidated(relief_invocation[0])
+                server.support_transit_override = "2000"
+                server.support_emcon_override = False
+                with self.assertRaisesRegex(ScriptExecutionError, "未回读到仅在阵位开启电磁辐射"):
+                    executor.execute_prevalidated(relief_invocation[0])
             self.assertTrue(results[-1].success, results[-1].stderr)
             area_posts = [item for item in Handler.requests if item[0].endswith("/ScenArea")]
             self.assertEqual(len(area_posts), 3)
@@ -153,10 +168,14 @@ class PowerShellUtf8Tests(unittest.TestCase):
             self.assertEqual(patrol_rules, [True, False])
             support_rules = [item[2]["Rules"] for item in Handler.requests
                              if item[2].get("type") == "SupportMissionRules"]
-            self.assertEqual(len(support_rules), 3)
+            self.assertEqual(len(support_rules), 5)
             self.assertTrue(support_rules[0]["OTR"])
             self.assertEqual([rule["StationAltitude_Aircraft"] for rule in support_rules],
-                             ["10000", "10000", "10000"])
+                             ["10000"] * 5)
+            self.assertEqual([rule["TransitAltitude_Aircraft"] for rule in support_rules],
+                             ["2000"] * 5)
+            self.assertTrue(all(rule["AEOIPA"] is True and rule["AEOOS"] is True
+                                for rule in support_rules))
             operations = [item[2]["type"] for item in Handler.requests
                           if item[2].get("type") in ("UnAssignUnitToMission", "AssignUnitToMission")]
             self.assertEqual(operations[-2:], ["UnAssignUnitToMission", "AssignUnitToMission"])
