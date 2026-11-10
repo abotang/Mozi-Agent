@@ -16,9 +16,11 @@ from runtime.execution.area_cleanup import OwnedAreaGarbageCollector
 from runtime.execution.jammer_controller import JammerEscortController
 from runtime.execution.executor import PowerShellMissionExecutor, ScriptExecutionError
 from runtime.mozi.mission_assignments import read_blue_mission_assignments
+from runtime.mozi.mission_catalog import read_blue_missions
 from runtime.planning.validation import validate_aircraft_availability, validate_plan
 from rules.awacs_deployment import enrich_existing_mission, minimum_separation_km
 from rules.awacs_triggers import next_trigger, opening_signature, record_success
+from rules.awacs_recovery import resolve_uncertain_awacs
 from rules.navy_patrol import opening_allowed, suppress_late_calls
 from rules.situation_memory import (memory_brief, record_dispatch_outcome,
                                     record_plan, scenario_rewound, update_memory)
@@ -144,7 +146,23 @@ class AutomaticMissionRunner:
         for name, record in list(self.state["missions"].items()):
             if record.get("guid") and not _mission_exists(situation["api_base"], record["guid"]):
                 del self.state["missions"][name]
+        self._reconcile_uncertain_awacs(situation)
         self._save_state()
+
+    def _reconcile_uncertain_awacs(self, situation: dict):
+        """Release a stale AWACS lock only after a successful live task audit."""
+        if not self.state.get("uncertain_awacs"):
+            return
+        try:
+            missions = read_blue_missions(situation["api_base"], situation["side"]["guid"])
+            reason = resolve_uncertain_awacs(self.state, situation, missions)
+        except Exception as exc:
+            reason = f"蓝方任务列表核对失败，保持阻断：{type(exc).__name__}"
+        if reason == "cleared":
+            self.output("预警任务历史执行结果已核对：墨子中不存在该任务，解除阻断并重新唤醒预警机 Agent")
+        elif self.state.get("awacs_uncertain_reason") != reason:
+            self.state["awacs_uncertain_reason"] = reason
+            self.output(f"预警任务暂缓重试：{reason}")
 
     def _recover_missions(self, situation: dict):
         """旧版用当前时间作想定 ID；从本项目报告恢复仍存在的任务。"""
@@ -195,6 +213,8 @@ class AutomaticMissionRunner:
         """执行可能已经修改想定时，持久化阻止同名任务自动重试。"""
         self.state.setdefault("uncertain", {})[item.call.mission_name] = {
             "call_id": item.call.call_id,
+            "skill_id": item.call.skill_id,
+            "unit_guids": list(item.call.unit_guids),
             "config": str(item.config_path),
             "report": str(item.report_path),
             "reason": reason[:400],

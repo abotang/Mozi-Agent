@@ -14,7 +14,8 @@ def skip_reason(owner: str, own_units: list[dict], skills: list[dict],
     if not skills:
         return "没有当前可调用的任务 Skill"
     if owner == "awacs" and operational_rules.get("awacs_trigger", {}).get("kind") == "hold":
-        return "预警机触发规则未唤醒"
+        return (operational_rules["awacs_trigger"].get("reason")
+                or "预警机触发规则未唤醒")
     # A patrol/support Skill can be useful without an enemy contact. A force
     # with strike-only Skills cannot create any valid task without a target.
     if all(skill.get("requires_target") is True for skill in skills):

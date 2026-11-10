@@ -48,9 +48,12 @@ def next_trigger(situation: dict, state: dict) -> dict:
 
     if not missions:
         signature = opening_signature(situation)
-        if aircraft and state.get("awacs_opening_attempt") != signature and not state.get("uncertain_awacs"):
+        if state.get("uncertain_awacs"):
+            return {"kind": "hold", "reason": state.get("awacs_uncertain_reason")
+                    or "预警任务执行结果未核对，暂缓重复创建"}
+        if aircraft and state.get("awacs_opening_attempt") != signature:
             return {"kind": "opening", "mode": "threat" if contacts else "local"}
-        return {"kind": "hold"}
+        return {"kind": "hold", "reason": "开局预警方案已尝试，等待态势变化"}
 
     occupied = {_guid(guid) for row in missions for guid in row.get("unit_guids", [])}
     occupied.update(_guid(guid) for guid in situation.get("mission_assignments", {}))
@@ -88,7 +91,7 @@ def next_trigger(situation: dict, state: dict) -> dict:
         if (mission.get("deployment", {}).get("mode") == "local" and contacts and now and created
                 and now - created >= timedelta(minutes=20) and old_unit):
             return {**base, "kind": "local_to_threat"}
-    return {"kind": "hold"}
+    return {"kind": "hold", "reason": "已有预警任务，当前不需要换班或调整区域"}
 
 
 def prepare_area(call, trigger: dict):

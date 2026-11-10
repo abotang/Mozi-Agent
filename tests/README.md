@@ -11,6 +11,7 @@
 | `test_awacs_area.py` | `rules/awacs_area.py`，机场/航母选择与跑马道几何边界 |
 | `test_awacs_deployment.py` | `rules/awacs_deployment.py`，数量与最小间距 |
 | `test_awacs_triggers.py` | `rules/awacs_triggers.py`，开局、敌情、回撤、换班 |
+| `test_awacs_recovery.py` | 预警任务执行结果不确定时的现场任务核对、自动解锁与继续阻断条件 |
 | `test_live_situation_roles.py` | `runtime/mozi/live_situation.py`，己方单位与接触分类 |
 | `test_mission_assignments.py` | 墨子任务列表中飞机占用的平面/分组结构与读取失败处理 |
 | `test_aircraft_occupancy.py` | 跨轮次已占用飞机不可新建任务；本项目已占用巡逻机可随完整编组更新原任务区域，执行前再次回读 |
