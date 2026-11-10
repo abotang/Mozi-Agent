@@ -56,7 +56,7 @@ class AgentConfig:
     joint_model: str | None = None
     component_model: str | None = None
     joint_max_tokens: int = 4096
-    component_max_tokens: int = 4096
+    component_max_tokens: int = 8192
     joint_interval_sec: float = 300.0
     component_parallelism: int = 3
     log_dir: str | None = None

@@ -22,6 +22,7 @@ from runtime.contracts import AGENT_OWNERS
 from runtime.app.daemon import AutomaticMissionRunner
 from runtime.execution.area_cleanup import OwnedAreaGarbageCollector
 from runtime.execution.jammer_controller import JammerEscortController
+from runtime.execution.side_doctrine import set_opening_engagement
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -196,6 +197,9 @@ def _auto_run(registry: SkillRegistry, deployment_path: str,
         replan_interval_sec=float(deployment.get("replan_interval_sec", 300)),
         script_parallelism=deployment.get("script_parallelism", 2),
         jammer_controller=jammer_controller,
+        opening_doctrine=lambda situation: set_opening_engagement(
+            situation, ROOT / "scripts" / "powershell" / "10-开局蓝方接战规则.ps1",
+            deployment.get("powershell_executable")),
     )
     print("当前墨子态势将发送至模型服务：", config.base_url, flush=True)
     try:

@@ -10,6 +10,7 @@ from runtime.skills.compiler import PlanCompiler
 from runtime.execution.executor import PowerShellMissionExecutor, write_execution_audit
 from runtime.skills.registry import SkillRegistry
 from runtime.planning.validation import validate_plan
+from runtime.mozi.mission_assignments import read_blue_mission_assignments
 
 
 class ScriptSkillOrchestrator:
@@ -27,6 +28,13 @@ class ScriptSkillOrchestrator:
     def execute_plan(self, plan: dict[str, Any], situation: dict[str, Any], *,
                      dry_run: bool = False, run_id: str | None = None) -> dict[str, Any]:
         selected_run_id = run_id or datetime.now().strftime("%Y%m%d-%H%M%S")
+        if not dry_run:
+            # The plan may be old by the time the user confirms execution.
+            # Refresh from Mozi before the first mission-creation request.
+            situation = dict(situation)
+            situation["mission_assignments"] = read_blue_mission_assignments(
+                situation["api_base"], situation["side"]["guid"],
+                {str(row.get("guid", "")) for row in situation["units"].get("air", [])})
         invocations = self.prepare(plan, situation, selected_run_id)
         results = self.executor.execute(invocations, dry_run=dry_run)
         run_dir = (invocations[0].config_path.parents[1] if invocations

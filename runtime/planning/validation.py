@@ -115,7 +115,28 @@ def normalize_situation(raw: dict[str, Any]) -> dict[str, Any]:
     for kind in ("air", "sea", "land", "submarine"):
         if not isinstance(contacts.get(kind, []), list):
             raise ValueError(f"contacts.{kind} 必须是数组")
+    if "mission_assignments" in raw and not isinstance(raw["mission_assignments"], dict):
+        raise ValueError("mission_assignments 必须是飞机 GUID 到任务 GUID 的对象")
     return raw
+
+
+def validate_aircraft_availability(calls: list[SkillCall], situation: dict[str, Any]) -> None:
+    """An aircraft can only be reused while updating the mission that owns it."""
+    assignments = {
+        _guid(str(unit), "mission_assignments.飞机GUID"):
+        _guid(str(mission), "mission_assignments.任务GUID")
+        for unit, mission in (situation.get("mission_assignments") or {}).items()
+    }
+    for call in calls:
+        own_mission = (str(call.existing_mission_guid).strip("{}").lower()
+                       if call.existing_mission_guid else "")
+        for raw_guid in (*call.unit_guids, *call.escort_unit_guids):
+            unit_guid = _guid(raw_guid, f"{call.call_id}.飞机GUID")
+            occupied_mission = assignments.get(unit_guid)
+            if occupied_mission and occupied_mission != own_mission:
+                raise ValueError(
+                    f"飞机已被任务占用：{unit_guid} 属于任务 {occupied_mission}；"
+                    f"{call.mission_name} 不能再次选择")
 
 
 def validate_plan(plan: dict[str, Any], situation: dict[str, Any], registry: SkillRegistry) -> list[SkillCall]:
@@ -267,4 +288,5 @@ def validate_plan(plan: dict[str, Any], situation: dict[str, Any], registry: Ski
         seen_names.add(call.mission_name)
         calls.append(call)
     validate_deployments(calls, situation)
+    validate_aircraft_availability(calls, situation)
     return calls

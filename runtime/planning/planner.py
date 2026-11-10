@@ -19,6 +19,7 @@ from rules.awacs_area import is_awacs
 from rules.awacs_deployment import minimum_separation_km
 from rules.navy_patrol import available_skills
 from rules.agent_activation import skip_reason
+from rules.air_patrol_update import patrol_update_options, validate_air_call
 from rules.joint_refresh import refresh_reason, strategic_snapshot
 from rules.situation_memory import filter_brief
 from rules.threat_axis import suspected_air_attack_axis
@@ -97,8 +98,18 @@ class HierarchicalSkillPlanner:
         }
 
         aircraft = situation["units"].get("air", [])
+        occupied_aircraft = {
+            str(guid).strip("{}").lower()
+            for guid in (situation.get("mission_assignments") or {})
+        }
+        patrol_updates = patrol_update_options(situation)
+        patrol_aircraft = {guid for option in patrol_updates
+                           for guid in option["unit_guids"]}
         own_unit_rows = {
-            "air": [row for row in aircraft if not is_awacs(row) and not is_jammer(row)],
+            "air": [row for row in aircraft
+                    if not is_awacs(row) and not is_jammer(row)
+                    and (str(row.get("guid", "")).strip("{}").lower() not in occupied_aircraft
+                         or str(row.get("guid", "")).strip("{}").lower() in patrol_aircraft)],
             "awacs": [row for row in aircraft if is_awacs(row)],
             "navy": situation["units"].get("navy", []),
             "army": situation["units"].get("army", []),
@@ -164,6 +175,8 @@ class HierarchicalSkillPlanner:
                 "existing_areas": deepcopy(situation.get("existing_areas", [])),
                 "task_skills": catalogs[owner],
             }
+            if owner == "air":
+                context["patrol_updates"] = deepcopy(patrol_updates)
             if situation.get("situation_memory"):
                 context["situation_memory"] = deepcopy(
                     (situation.get("_service_situation_memory") or {}).get(owner)
@@ -190,6 +203,7 @@ class HierarchicalSkillPlanner:
                 if any(str(guid).strip().strip("{}").lower() not in own_ids for guid in selected):
                     raise ValueError(f"{owner} Agent 使用了不属于 own_units 的主任务单元")
                 if owner == "air":
+                    validate_air_call(call, patrol_updates)
                     escorts = call.get("escort_unit_guids") or []
                     if any(str(guid).strip().strip("{}").lower() not in own_ids
                            for guid in escorts):

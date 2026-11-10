@@ -6,12 +6,15 @@
 | --- | --- |
 | `test_agent_activation_joint_refresh.py` | `rules/agent_activation.py`、`joint_refresh.py`，联合/专业 Agent 跳过与缓存 |
 | `test_agent_monitor.py` | `agents/monitor_log.py`、终端监控事件的输入输出和错误记录 |
-| `test_area_cleanup.py` | `runtime/execution/area_cleanup.py`，只清理无任务引用的自建区域 |
+| `test_area_cleanup.py` | `runtime/execution/area_cleanup.py`，原巡逻任务换区后即使 missionList 滞后也只清理任务详情证实不用的旧区域 |
 | `test_auto_runner.py` | `runtime/app/daemon.py`，轮询、去重、并行、失败不确定态、态势记忆 |
 | `test_awacs_area.py` | `rules/awacs_area.py`，机场/航母选择与跑马道几何边界 |
 | `test_awacs_deployment.py` | `rules/awacs_deployment.py`，数量与最小间距 |
 | `test_awacs_triggers.py` | `rules/awacs_triggers.py`，开局、敌情、回撤、换班 |
 | `test_live_situation_roles.py` | `runtime/mozi/live_situation.py`，己方单位与接触分类 |
+| `test_mission_assignments.py` | 墨子任务列表中飞机占用的平面/分组结构与读取失败处理 |
+| `test_aircraft_occupancy.py` | 跨轮次已占用飞机不可新建任务；本项目已占用巡逻机可随完整编组更新原任务区域，执行前再次回读 |
+| `test_side_doctrine.py` | 蓝方开局接战条令的触发时机与 PowerShell 执行结果校验 |
 | `test_jammer_support.py` | 飞机打击任务触发、目标和空闲检查、单机派遣与后方伴随航点 |
 | `test_jammer_boundary.py` | 空军 Agent 不见干扰机、LLM 护航字段和直接方案都不能分配干扰机；普通战斗机护航仍可用 |
 | `test_jammer_powershell.py` | 固定干扰脚本对本地模拟 REST 的起飞、设备、航点和 UTF-8 请求 |

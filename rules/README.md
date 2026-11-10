@@ -10,6 +10,8 @@
 | `awacs_triggers.py` | 根据想定时间、预警机起降状态与敌机距离，决定何时调用预警机 Agent；校验开局、区域调整、回撤与换班 |
 | `threat_axis.py` | 当前仅有一架敌方预警机接触时，计算蓝方平台指向该接触的疑似空中进攻轴向；不生成未探测的敌机或打击目标 |
 | `agent_activation.py` | 无本 Agent 单元、无可用 Skill、全是打击 Skill 却无对应实时接触时，跳过专业 Agent 模型调用 |
+| `air_patrol_update.py` | 仅将本项目原战斗巡逻任务中的飞机交给空军 Agent 改区；校验原任务 GUID、名称、Skill 和完整飞机编组，防止占用机进入新任务 |
+| `side_doctrine.py` | 新想定开局或想定时间倒退时触发一次蓝方推演方接战临机目标设置 |
 | `joint_refresh.py` | 联合指挥方案的战略变化快照：新想定、蓝方兵力变化、威胁类别出现或消失、威胁距离段跨越时立即刷新；其余情况受刷新间隔控制 |
 | `situation_memory.py` | 用确定性代码压缩当前想定的接触轨迹、接近趋势、距离段事件和已校验方案；记录有固定上限，保存在 `automatic_state.json`，没有额外 LLM 调用 |
 | `situation_refresh.py` | 同 GUID 接触自上次规划移动 ≥40 km 且间隔 ≥30 秒现实时间，或跨越 300/150/75 km 距离段时，提前唤醒规划 |

@@ -12,3 +12,5 @@
 | `army.md` | 陆军：仅使用已注册的陆军 Skill；当前没有可执行陆军脚本 |
 
 调用路径：`agents/prompt_loader.py` 读取本文档同级的角色文件 → `runtime/planning/planner.py` 组装当轮上下文 → `agents/model_client.py` 请求模型。修改文件后重启 `run.py`。态势记忆不是对话原文，来源和上限见 `rules/situation_memory.py`。
+
+空军、海军、陆军三份提示词各最多 2000 字符，由加载器检查。这个数只约束静态提示词文件；每轮附加的态势 JSON 另计。`component_max_tokens` 现为 8192，是各专业 Agent 的输出上限；完整方案仍须通过 JSON 解析和规则校验才会进入任务脚本。

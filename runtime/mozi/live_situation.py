@@ -6,6 +6,7 @@ from urllib.request import urlopen
 import zlib
 
 from runtime.contracts import SERVICE_UNIT_TYPES
+from runtime.mozi.mission_assignments import read_blue_mission_assignments
 
 
 def _frame(host, port):
@@ -100,10 +101,15 @@ def collect_live_situation(*, host="127.0.0.1", rest_port=8082,
         if category:
             contacts[category].append(_item(row))
     start, end, initial = _times(api_base)
+    # Read actual Mozi mission assignments, including missions not created by
+    # this project. Failure must stop planning rather than mark aircraft free.
+    mission_assignments = read_blue_mission_assignments(
+        api_base, side["id"], {str(row["guid"]) for row in air})
     return {"api_base": api_base, "side": {"name": side["name"], "guid": side["id"]},
             "scenario": {"name": str(state.get("ScenarioName") or ""),
                          "start_time": start, "end_time": end,
                          "initial_time": initial},
             "units": {"air": air, "navy": navy, "army": army,
                       "submarine": submarine},
-            "contacts": contacts, "existing_missions": [], "existing_areas": []}
+            "contacts": contacts, "existing_missions": [], "existing_areas": [],
+            "mission_assignments": mission_assignments}

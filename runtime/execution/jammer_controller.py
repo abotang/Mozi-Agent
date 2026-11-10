@@ -126,7 +126,9 @@ class JammerEscortController:
             for group in mission.get("assignUnit") or []:
                 if not isinstance(group, dict):
                     continue
-                for unit in group.get("children") or []:
+                children = group.get("children")
+                units = children if isinstance(children, list) and children else [group]
+                for unit in units:
                     if isinstance(unit, dict):
                         occupied.add(_guid(unit.get("id") or unit.get("key")))
         return occupied

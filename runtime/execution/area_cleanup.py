@@ -1,9 +1,10 @@
-"""只清理本项目创建且没有任何任务关联的墨子区域。"""
+"""只清理本项目创建且没有任务实际使用的墨子区域。"""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 from uuid import UUID
 
@@ -34,8 +35,10 @@ class OwnedAreaGarbageCollector:
         self.get_json = get_json
         self.post_json = post_json
 
-    def _owned(self, side_guid: str) -> dict[str, set[str]]:
+    def _owned(self, side_guid: str) -> tuple[dict[str, set[str]], set[str]]:
         owned: dict[str, set[str]] = {}
+        latest_area: dict[str, tuple[int, str, str]] = {}
+        mission_areas: dict[str, set[str]] = {}
         for path in self.run_root.glob("*/reports/*.json"):
             try:
                 payload = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -68,6 +71,12 @@ class OwnedAreaGarbageCollector:
                 area_guid = _guid(area.get("guid"))
                 if not area_guid:
                     continue
+                mission_guid = _guid(task.get("missionGuid"))
+                if mission_guid:
+                    mission_areas.setdefault(mission_guid, set()).add(area_guid)
+                    marker = (path.stat().st_mtime_ns, str(path), area_guid)
+                    if marker > latest_area.get(mission_guid, (-1, "", "")):
+                        latest_area[mission_guid] = marker
                 reference = area.get("reference")
                 refs = reference.get("data") if isinstance(reference, dict) else None
                 if isinstance(refs, list):
@@ -75,7 +84,44 @@ class OwnedAreaGarbageCollector:
                         ref for value in refs if (ref := _guid(value)))
                 else:
                     owned.setdefault(area_guid, set())
-        return owned
+        # Only an earlier area of an updated task may have a stale missionList.
+        # Do not add ordinary linked areas to the expensive mission readback path.
+        previous = {area for mission, areas in mission_areas.items()
+                    if len(areas) > 1 for area in areas
+                    if area != latest_area[mission][2]}
+        return owned, previous
+
+    def _stale_patrol_links(self, base: str, area_guid: str, area: dict,
+                            links: list) -> bool:
+        """Confirm every listed task now uses a different patrol/alert area."""
+        old_points = {_guid(point.get("id")) for point in (area.get("points") or [])
+                      if isinstance(point, dict)}
+        if len(old_points) < 3:
+            return False
+        for link in links:
+            mission_guid = _guid(link.get("id")) if isinstance(link, dict) else ""
+            if not mission_guid:
+                return False
+            try:
+                detail = self.get_json(f"{base}/Mission?Guid={quote(mission_guid)}")
+            except Exception:
+                return False
+            data = detail.get("data") if isinstance(detail, dict) and detail.get("code") == 0 else None
+            patrol = data.get("patrolmissionData") if isinstance(data, dict) else None
+            if not isinstance(patrol, dict) or not _guid(patrol.get("PatrolArea_ID")):
+                return False
+            if _guid(patrol["PatrolArea_ID"]) == area_guid:
+                return False
+            current_points = set()
+            for key in ("PatrolArea", "AlertArea"):
+                rows = patrol.get(key)
+                if not isinstance(rows, list):
+                    return False
+                current_points.update(_guid(point.get("id")) for point in rows
+                                      if isinstance(point, dict))
+            if old_points.intersection(current_points):
+                return False
+        return True
 
     @staticmethod
     def _areas(payload: dict, side_guid: str) -> dict[str, dict]:
@@ -99,8 +145,9 @@ class OwnedAreaGarbageCollector:
 
     def collect(self, situation: dict) -> dict:
         side_guid = _guid(situation["side"]["guid"])
-        owned = self._owned(side_guid)
-        result = {"owned": len(owned), "deleted": [], "linked": [], "errors": []}
+        owned, previous = self._owned(side_guid)
+        result = {"owned": len(owned), "deleted": [], "linked": [],
+                  "stale_links": [], "errors": []}
         if not owned:
             return result
         base = situation["api_base"].rstrip("/")
@@ -114,8 +161,11 @@ class OwnedAreaGarbageCollector:
                 result["errors"].append(f"{area_guid}: 缺少可核对的 missionList")
                 continue
             if links:
-                result["linked"].append(area_guid)
-                continue
+                if (area_guid not in previous
+                        or not self._stale_patrol_links(base, area_guid, area, links)):
+                    result["linked"].append(area_guid)
+                    continue
+                result["stale_links"].append(area_guid)
             response = self.post_json(f"{base}/ScenArea", {
                 "option": "delArea", "side": situation["side"]["name"],
                 "area_id": area["id"],

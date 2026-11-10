@@ -10,4 +10,4 @@
 | `llm.example.json` | 新电脑的配置参考 | 复制后填写适合本机的值 |
 | `*.key.local` | 本机模型密钥文件，若存在 | 不提交到 GitHub，不写入 README 或日志 |
 
-`deployment.json` 中的 `llm_config` 相对本目录解析。`llm.json` 中的 `api_key_file`、`log_dir` 也相对本目录解析。密钥优先从 `api_key_env` 指定的环境变量读取。用 `python run.py doctor` 做只读连接检查；用 `python run.py agent-status` 查看 Agent 与模型配置。硬规则和阈值在 `rules/`，不靠改提示词实现。
+`deployment.json` 中的 `llm_config` 相对本目录解析。`llm.json` 中的 `api_key_file`、`log_dir` 也相对本目录解析。密钥优先从 `api_key_env` 指定的环境变量读取。用 `python run.py doctor` 做只读连接检查；用 `python run.py agent-status` 查看 Agent 与模型配置。`component_max_tokens` 默认 8192，限制空军、预警机、海军、陆军各次模型调用的输出，不限制态势输入；联合指挥仍为 4096。硬规则和阈值在 `rules/`，不靠改提示词实现。

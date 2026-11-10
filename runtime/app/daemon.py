@@ -15,13 +15,15 @@ from runtime.skills.compiler import PlanCompiler
 from runtime.execution.area_cleanup import OwnedAreaGarbageCollector
 from runtime.execution.jammer_controller import JammerEscortController
 from runtime.execution.executor import PowerShellMissionExecutor, ScriptExecutionError
-from runtime.planning.validation import validate_plan
+from runtime.mozi.mission_assignments import read_blue_mission_assignments
+from runtime.planning.validation import validate_aircraft_availability, validate_plan
 from rules.awacs_deployment import enrich_existing_mission, minimum_separation_km
 from rules.awacs_triggers import next_trigger, opening_signature, record_success
 from rules.navy_patrol import opening_allowed, suppress_late_calls
 from rules.situation_memory import (memory_brief, record_dispatch_outcome,
                                     record_plan, scenario_rewound, update_memory)
 from rules.situation_refresh import contact_snapshot, tactical_refresh_reason
+from rules.side_doctrine import opening_engagement_needed
 
 
 def _signature(situation: dict) -> str:
@@ -32,6 +34,7 @@ def _signature(situation: dict) -> str:
                   for kind, rows in situation["units"].items()},
         "contacts": {kind: sorted(str(item["guid"]) for item in rows)
                      for kind, rows in situation["contacts"].items()},
+        "occupied_aircraft": sorted((situation.get("mission_assignments") or {}).items()),
     }
     return json.dumps(values, sort_keys=True, ensure_ascii=False)
 
@@ -67,7 +70,8 @@ class AutomaticMissionRunner:
                  script_parallelism: int = 2,
                  sleep=time.sleep, clock=time.monotonic, output=print,
                  area_cleaner: OwnedAreaGarbageCollector | None = None,
-                 jammer_controller: JammerEscortController | None = None):
+                 jammer_controller: JammerEscortController | None = None,
+                 opening_doctrine=None):
         self.collector = collector
         self.planner = planner
         self.registry = registry
@@ -84,6 +88,7 @@ class AutomaticMissionRunner:
         self.output = output
         self.area_cleaner = area_cleaner
         self.jammer_controller = jammer_controller
+        self.opening_doctrine = opening_doctrine
         self.state = self._load_state()
 
     def _update_jammer(self, situation: dict, cycle: int) -> None:
@@ -212,7 +217,8 @@ class AutomaticMissionRunner:
                 situation = self.collector()
                 stage = "核对已有任务"
                 self._reconcile(situation)
-                if scenario_rewound(self.state.get("situation_memory"), situation):
+                rewound = scenario_rewound(self.state.get("situation_memory"), situation)
+                if rewound:
                     self.state["jammer_support"] = {}
                     reset_directive = getattr(self.planner, "reset_cached_directive", None)
                     if callable(reset_directive):
@@ -221,6 +227,14 @@ class AutomaticMissionRunner:
                     last_planned_contacts = None
                     last_planned_at = -float("inf")
                     self.output(f"[第 {cycles} 轮] 想定时间倒退：清空上一局态势记忆与联合方案缓存")
+                if (self.opening_doctrine is not None
+                        and opening_engagement_needed(self.state, rewound=rewound)):
+                    stage = "设置蓝方开局接战条令"
+                    setting = self.opening_doctrine(situation)
+                    self.state["opportunity_targets_scenario"] = self.state["scenario"]
+                    self._save_state()
+                    self.output(f"[第 {cycles} 轮] 蓝方接战临机目标：是"
+                                f"（{'已设置' if setting.get('changed') else '原已启用'}）")
                 self._update_jammer(situation, cycles)
                 # 每次轮询先归纳态势；即使本轮不调用模型，轨迹也连续保存。
                 memory = update_memory(self.state.get("situation_memory"), situation)
@@ -304,6 +318,7 @@ class AutomaticMissionRunner:
                         break
                     except ValueError as exc:
                         repairable = ("同一批方案中单位重复分配",
+                                      "飞机已被任务占用",
                                       "空中预警只能分配预警机",
                                       "空中预警每项只分配一架预警机",
                                       "空中预警 area", "空中预警进攻轴向",
@@ -348,6 +363,12 @@ class AutomaticMissionRunner:
                         continue
                     pending.append(call)
                 if pending:
+                    if "mission_assignments" in situation:
+                        stage = "创建前核对飞机任务占用"
+                        situation["mission_assignments"] = read_blue_mission_assignments(
+                            situation["api_base"], situation["side"]["guid"],
+                            {str(row.get("guid", "")) for row in situation["units"].get("air", [])})
+                        validate_aircraft_availability(pending, situation)
                     stage = "编译并执行任务脚本"
                     run_id = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
                     invocations = self.compiler.compile(pending, situation, run_id)

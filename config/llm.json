@@ -10,7 +10,7 @@
   "joint_model": "deepseek-v4.1-flash",
   "component_model": "deepseek-v4.1-flash",
   "joint_max_tokens": 4096,
-  "component_max_tokens": 4096,
+  "component_max_tokens": 8192,
   "joint_interval_sec": 900,
   "component_parallelism": 4,
   "log_dir": "../runs/agent_monitor",

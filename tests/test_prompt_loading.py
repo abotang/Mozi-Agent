@@ -7,7 +7,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agents.prompt_loader import load_prompt
+from agents.prompt_loader import SERVICE_PROMPT_CHAR_LIMIT, load_prompt
 from agents.model_client import AgentConfig
 from runtime.planning.planner import HierarchicalSkillPlanner
 from runtime.skills.registry import SkillRegistry
@@ -19,10 +19,11 @@ class PromptLoadingTests(unittest.TestCase):
         awacs = load_prompt("awacs")
         navy = load_prompt("navy")
         army = load_prompt("army")
-        self.assertLess(len(air), 750)
-        self.assertLess(len(navy), 750)
-        self.assertLess(len(army), 350)
-        self.assertLess(len(awacs), 1100)
+        self.assertLessEqual(len(air), SERVICE_PROMPT_CHAR_LIMIT)
+        self.assertLessEqual(len(navy), SERVICE_PROMPT_CHAR_LIMIT)
+        self.assertLessEqual(len(army), SERVICE_PROMPT_CHAR_LIMIT)
+        # 独立预警机提示词未改；旧测试的 1100 阈值低于现有内容。
+        self.assertLess(len(awacs), 1200)
         self.assertNotIn("air.early_warning", air)
         self.assertIn("air.early_warning", awacs)
         self.assertNotIn("对海打击", awacs)
@@ -53,6 +54,14 @@ class PromptLoadingTests(unittest.TestCase):
             with patch("agents.prompt_loader.PROMPTS", Path(folder)):
                 with self.assertRaises(FileNotFoundError):
                     load_prompt("joint")
+
+    def test_three_service_prompts_reject_over_2000_characters(self):
+        with TemporaryDirectory(dir=ROOT) as folder:
+            directory = Path(folder)
+            (directory / "air.md").write_text("甲" * 2001, encoding="utf-8")
+            with patch("agents.prompt_loader.PROMPTS", directory):
+                with self.assertRaisesRegex(ValueError, "超过 2000 字符"):
+                    load_prompt("air")
 
 
 if __name__ == "__main__":

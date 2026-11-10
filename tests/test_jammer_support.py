@@ -37,6 +37,10 @@ def mission_detail(*, target=True):
 
 
 class JammerSupportTest(unittest.TestCase):
+    def test_flat_mission_assignment_marks_jammer_occupied(self):
+        rows = [{"assignUnit": [{"id": JAMMER}]}]
+        self.assertIn(JAMMER, JammerEscortController._occupied(rows))
+
     def test_jammer_never_becomes_striker(self):
         units = situation()["units"]["air"]
         detail = mission_detail()

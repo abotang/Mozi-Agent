@@ -53,6 +53,7 @@ def next_trigger(situation: dict, state: dict) -> dict:
         return {"kind": "hold"}
 
     occupied = {_guid(guid) for row in missions for guid in row.get("unit_guids", [])}
+    occupied.update(_guid(guid) for guid in situation.get("mission_assignments", {}))
     now = _time(situation["scenario"].get("start_time"))
     for mission in missions:
         guid = _guid(mission.get("guid"))

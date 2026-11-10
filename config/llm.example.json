@@ -7,7 +7,7 @@
   "event_cooldown_sec": 15,
   "max_age_sec": 600,
   "joint_max_tokens": 4096,
-  "component_max_tokens": 4096,
+  "component_max_tokens": 8192,
   "joint_interval_sec": 900,
   "component_parallelism": 4,
   "log_dir": "../runs/agent_monitor",

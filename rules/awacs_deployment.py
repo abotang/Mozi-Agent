@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 
 from rules.awacs_area import _distance_km, _position
+from rules.air_patrol_update import CAP_SKILL, saved_current_area
 
 
 AWACS_SKILL_ID = "air.early_warning"
@@ -58,6 +59,9 @@ def minimum_separation_km(situation: dict) -> float:
 def enrich_existing_mission(name: str, record: dict) -> dict:
     """Recover the station and assigned aircraft from this project's saved config."""
     item = {"name": name, "guid": record.get("guid"), "skill_id": record.get("skill_id")}
+    if record.get("skill_id") == CAP_SKILL:
+        item["current_area"] = saved_current_area(record)
+        return item
     if record.get("skill_id") != AWACS_SKILL_ID:
         return item
     try:

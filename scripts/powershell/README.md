@@ -13,6 +13,7 @@
 | `07-舰艇对海攻击.ps1` | `navy.sea_strike` | 当前水面接触目标 |
 | `08-删除任务及对应区域.ps1` | 独立维护入口 | 删除指定任务；区域仅在满足安全条件时删除 |
 | `09-电子干扰伴随.ps1` | 自动推演的独立控制入口 | 打击任务触发后请求干扰机起飞；升空后尾随并开启雷达/电子干扰；结束时关闭设备并请求返航 |
+| `10-开局蓝方接战规则.ps1` | 推演方开局条令 | 设置蓝方 `General.ROE.ShootTourists=1`（可以与任何临机目标交战），回读确认；`-ValidateOnly` 只读检查 |
 | `Invoke-MoziBlueMissionPlan.ps1` | 七类任务共用 | 校验配置，按顺序创建/更新区域、任务、规则、分配单元和目标，并回读报告 |
 
 所有 POST 请求体由执行器以 UTF-8 字节发送。打击任务必须回读到目标；巡逻任务必须回读到区域。脚本报告和任务 GUID 位于 `runs/<批次>/reports/`。修改 API 调用顺序时检查 `tests/test_powershell_http_utf8.py` 和 `tests/test_script_skill_runtime.py`。
