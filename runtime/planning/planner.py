@@ -21,6 +21,8 @@ from rules.navy_patrol import available_skills
 from rules.agent_activation import skip_reason
 from rules.joint_refresh import refresh_reason, strategic_snapshot
 from rules.situation_memory import filter_brief
+from rules.threat_axis import suspected_air_attack_axis
+from rules.jammer_support import is_jammer
 
 
 class HierarchicalSkillPlanner:
@@ -81,6 +83,10 @@ class HierarchicalSkillPlanner:
 
     def plan(self, situation: dict[str, Any], instruction: str) -> dict[str, Any]:
         rules = dict(situation.get("operational_rules") or {})
+        rules.pop("suspected_air_attack_axis", None)
+        suspected_axis = suspected_air_attack_axis(situation)
+        if suspected_axis:
+            rules["suspected_air_attack_axis"] = suspected_axis
         rules["awacs_min_separation_km"] = minimum_separation_km(situation)
         navy_patrol_allowed = rules.get("navy_patrol_opening_allowed", True)
 
@@ -92,7 +98,7 @@ class HierarchicalSkillPlanner:
 
         aircraft = situation["units"].get("air", [])
         own_unit_rows = {
-            "air": [row for row in aircraft if not is_awacs(row)],
+            "air": [row for row in aircraft if not is_awacs(row) and not is_jammer(row)],
             "awacs": [row for row in aircraft if is_awacs(row)],
             "navy": situation["units"].get("navy", []),
             "army": situation["units"].get("army", []),
@@ -121,6 +127,7 @@ class HierarchicalSkillPlanner:
                     for owner in AGENT_OWNERS
                 },
             }
+            joint_context["situation"]["operational_rules"] = deepcopy(rules)
             directive = self._joint(self.joint_agent.decide(joint_context))
             self._joint_cache = {"instruction": joint_instruction, "snapshot": snapshot,
                                  "at": now, "directive": deepcopy(directive)}

@@ -1,5 +1,7 @@
 # 重构版：LLM → 任务 Skill → 固定脚本 → 墨子 API
 
+各源码目录都有 `README.md`，逐个列出代码文件职责、输入输出与修改位置。先看 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) 的目录索引，再进入对应目录阅读；自动生成的 `runs/` 和随附的 PowerShell 工具也有上层说明。
+
 本文件夹可单独放在桌面运行。需要 Python 3.10+；项目自带 PowerShell 7.6.9，默认使用 `tools/powershell7/pwsh.exe`，不使用 Windows PowerShell 5.1。实时读取墨子态势时安装 `requirements.txt` 中的依赖。模型服务配置参考 `config/llm.example.json`，将密钥保存在环境变量中。
 
 直接在 VS Code 中运行 `run.py`（不带参数）启动自动推演：持续读取墨子态势，调用联合指挥、空军、预警机、海军、陆军 Agent，校验 Skill 参数并自动执行固定脚本。按 Ctrl+C 停止。当前轮处理耗时会打印在控制台；已创建任务记在 `runs/automatic_state.json`，避免重复创建。新电脑先修改 `config/deployment.json` 中的墨子主机、端口、API 地址和自动任务目标，再运行 `python -m pip install -r requirements.txt`。
@@ -20,6 +22,7 @@ python .\monitor_agents.py --last 50 --once        # 查看历史后退出
 ### 独立网页监控前端
 
 双击根目录的 `启动Agent监控前端.cmd`，或在另一个终端运行 `python monitor_dashboard.py`，浏览器会打开 `http://127.0.0.1:8765/`。网页可以按推演场次、Agent、状态和关键词筛选，查看完整输入、结构化输出、原始回复与错误，显示调用耗时，并导出**所选场次的全部事件**为 JSONL。网页每 2 秒读取新增记录；它只读取本地日志，不连接模型，也不创建或修改墨子任务。
+若端口 8765 无法监听，启动程序会选择空闲端口，并在终端打印实际访问地址。
 
 网页和推演可以分别启动、停止。推演结束后重新运行 `monitor_dashboard.py`，左侧仍能选历史场次；日志不会因关闭网页或 `run.py` 而删除。每次启动推演程序会产生新的场次 ID，并记录想定名称和轮次。将整个项目复制到另一台电脑时，把 `runs/agent_monitor/` 一并复制才会带上历史记录。默认仅监听本机 `127.0.0.1`，不会向局域网开放。
 
@@ -37,6 +40,8 @@ python .\monitor_dashboard.py --port 8766 --no-browser
 所有向墨子发送的 JSON 请求体都由脚本转换为 UTF-8 字节，并使用 `application/json; charset=utf-8`，确保中文推演方名称、任务名称和区域名称正确传输。
 
 舰艇海上巡逻只允许在想定开局创建一次；后续轮次不再新增舰艇巡逻任务，发现水面接触时可创建舰艇对海攻击。飞机战斗巡逻和空中预警任务启用墨子界面的“1/3规则”；脚本写入后会回读确认战斗巡逻任务的规则状态。
+
+飞机对空、对海、对地打击任务创建成功且回读到目标和主攻机后，独立规则立即为该任务派出一架空闲、具备电子干扰与雷达设备的飞机。升空后固定脚本开启干扰和雷达，并持续更新主攻机群后方的伴随航点。干扰机不作为主攻机分配，也不依赖墨子护航标记。配置在 `config/deployment.json` 的 `jammer_support`；触发与回读细节见 [JAMMER_SUPPORT.md](docs/JAMMER_SUPPORT.md)。
 
 空中预警只分配真正的预警机，每个任务一架。独立预警机 Agent 根据态势填写进攻轴向和向前延伸距离；`rules/awacs_area.py` 以离预警机最近的蓝方机场或航母为起飞平台，生成整体长 60 km、宽 30 km（直线段 `L=30 km`、半圆半径 `r=15 km`）的跑马道区域，长轴垂直进攻轴向，所有点距平台不超过 300 km。前推最多 284 km；无可信轴向时区域留在平台附近，长轴东西向。任务专用硬规则集中在 `rules/`，说明见 [rules/README.md](rules/README.md)。同一轮若 Agent 重复分配单位，程序会指出冲突的两个任务并立即重规划一次。
 

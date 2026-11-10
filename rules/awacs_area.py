@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 
+from rules.threat_axis import suspected_air_attack_axis
+
 
 EARTH_RADIUS_KM = 6371.0088
 STRAIGHT_LENGTH_KM = 30.0  # L: 60 km overall length minus the 30 km diameter
@@ -130,12 +132,23 @@ def make_awacs_area(call, situation: dict, aircraft: dict) -> dict:
         origin_guid, origin_name, origin = min(
             candidates, key=lambda item: (_distance_km(aircraft_position, item[2]), item[0]))
     bearing, forward_km = _deployment(call, situation)
-    if "attack_bearing_deg" in call.area:
+    suspected_axis = suspected_air_attack_axis(situation, origin=origin)
+    if suspected_axis:
+        # A lone current enemy AEW contact defines a *suspected* direction.
+        # Keep the Agent's conservative forward distance; if it supplied no
+        # distance, stay at the launch platform while orienting the racetrack.
+        bearing = suspected_axis["bearing_deg"]
+        axis_note = (f"疑似进攻轴向{bearing:g}°;依据当前敌方预警接触"
+                     f"{suspected_axis['contact_guid']};未确认其他敌机")
+    elif "attack_bearing_deg" in call.area:
+        axis_note = f"进攻轴向{bearing:g}°"
+    else:
+        axis_note = "无已知进攻轴向;长轴暂取东西向90°"
+    if suspected_axis or "attack_bearing_deg" in call.area:
         long_axis = (bearing + 90) % 360
-        axis_note = f"进攻轴向{bearing:g}°;长轴{long_axis:g}°"
+        axis_note += f";长轴{long_axis:g}°"
     else:
         long_axis = 90.0
-        axis_note = "无已知进攻轴向;长轴暂取东西向90°"
     center = _destination(origin, bearing, forward_km)
     points = _racetrack(center, long_axis)
     distances = [_distance_km(origin, (point["lat"], point["lon"])) for point in points]
@@ -147,7 +160,7 @@ def make_awacs_area(call, situation: dict, aircraft: dict) -> dict:
                    f"{axis_note};L={STRAIGHT_LENGTH_KM:g}km;r={TURN_RADIUS_KM:g}km;"
                    f"最远{max(distances):.1f}km"),
         "points": points,
-        "deployment": {"mode": "threat" if "attack_bearing_deg" in call.area else "local",
+        "deployment": {"mode": "threat" if suspected_axis or "attack_bearing_deg" in call.area else "local",
                        "bearing_deg": bearing, "forward_km": forward_km,
                        "platform_guid": origin_guid},
     }

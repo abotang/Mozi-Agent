@@ -1,0 +1,13 @@
+# 程序入口与自动运行
+
+本目录负责启动方式和轮次编排，调用规划、规则与脚本层；不在这里定义某个任务的 API 请求体。
+
+| 代码 | 作用 |
+| --- | --- |
+| `cli.py` | `run.py` 实际命令入口；无参数进入 `auto-run`，另提供 `doctor`、`interactive`、`validate`、`execute`、`plan` 等命令 |
+| `daemon.py` | 自动循环：采集态势、更新压缩记忆、决定何时唤醒 Agent、去重、脚本预校验、并行执行、持久化结果和失败日志 |
+| `api.py` | 供上层程序调用的 `dispatch` 与 `plan_and_dispatch`；`execute=False` 默认只校验 |
+| `agent_monitor.py` | `monitor_agents.py` 的终端查看逻辑；读取本地 Agent JSONL 日志 |
+| `__init__.py` | 包标记 |
+
+`daemon.py` 的持久状态在 `runs/automatic_state.json`；脚本批次配置和报告在 `runs/<批次>/`。每项任务执行前都做本地校验；执行结果不确定时进入 `uncertain`，避免盲目重复创建。Agent 触发阈值和态势压缩规则见根目录 `rules/`，脚本并发数在 `config/deployment.json`。

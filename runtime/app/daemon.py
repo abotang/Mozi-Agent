@@ -13,6 +13,7 @@ from urllib.request import urlopen
 
 from runtime.skills.compiler import PlanCompiler
 from runtime.execution.area_cleanup import OwnedAreaGarbageCollector
+from runtime.execution.jammer_controller import JammerEscortController
 from runtime.execution.executor import PowerShellMissionExecutor, ScriptExecutionError
 from runtime.planning.validation import validate_plan
 from rules.awacs_deployment import enrich_existing_mission, minimum_separation_km
@@ -65,7 +66,8 @@ class AutomaticMissionRunner:
                  poll_interval_sec: float = 10, replan_interval_sec: float = 300,
                  script_parallelism: int = 2,
                  sleep=time.sleep, clock=time.monotonic, output=print,
-                 area_cleaner: OwnedAreaGarbageCollector | None = None):
+                 area_cleaner: OwnedAreaGarbageCollector | None = None,
+                 jammer_controller: JammerEscortController | None = None):
         self.collector = collector
         self.planner = planner
         self.registry = registry
@@ -81,7 +83,21 @@ class AutomaticMissionRunner:
         self.clock = clock
         self.output = output
         self.area_cleaner = area_cleaner
+        self.jammer_controller = jammer_controller
         self.state = self._load_state()
+
+    def _update_jammer(self, situation: dict, cycle: int) -> None:
+        if self.jammer_controller is None:
+            return
+        try:
+            messages = self.jammer_controller.tick(situation, self.state)
+            if messages:
+                self._save_state()
+                for message in messages:
+                    self.output(f"[第 {cycle} 轮] 电子干扰伴随：{message}")
+        except Exception as exc:
+            # A support-controller fault must not stop strike planning.
+            self.output(f"[第 {cycle} 轮] 电子干扰伴随失败：{type(exc).__name__}: {exc}")
 
     def _load_state(self) -> dict:
         if self.state_path.is_file():
@@ -197,6 +213,7 @@ class AutomaticMissionRunner:
                 stage = "核对已有任务"
                 self._reconcile(situation)
                 if scenario_rewound(self.state.get("situation_memory"), situation):
+                    self.state["jammer_support"] = {}
                     reset_directive = getattr(self.planner, "reset_cached_directive", None)
                     if callable(reset_directive):
                         reset_directive()
@@ -204,6 +221,7 @@ class AutomaticMissionRunner:
                     last_planned_contacts = None
                     last_planned_at = -float("inf")
                     self.output(f"[第 {cycles} 轮] 想定时间倒退：清空上一局态势记忆与联合方案缓存")
+                self._update_jammer(situation, cycles)
                 # 每次轮询先归纳态势；即使本轮不调用模型，轨迹也连续保存。
                 memory = update_memory(self.state.get("situation_memory"), situation)
                 self.state["situation_memory"] = memory
@@ -391,6 +409,9 @@ class AutomaticMissionRunner:
                                 self._save_state()
                                 failures.append(f"{item.call.mission_name}: {exc}")
                                 self.output(f"创建结果未确认：{item.call.mission_name}：{exc}")
+                    # A failed peer task must not delay support for a strike
+                    # that was created successfully in this same batch.
+                    self._update_jammer(situation, cycles)
                     if failures:
                         self._cleanup_areas(situation, cycles)
                         raise RuntimeError(f"{len(failures)} 项任务执行失败；其余任务已分别记录："

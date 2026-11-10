@@ -1,7 +1,13 @@
-# LLM Agent
+# Agent 模型层
 
-本目录有五个角色：联合指挥、空军、预警机、海军、陆军。联合指挥读全局态势；预警机 Agent 只接收预警机和预警 Skill，空军 Agent 不再处理预警任务。陆军目前没有地面单元执行的固定脚本，因此只形成方案和能力缺口。
+本目录只定义 Agent 角色、提示词读取和模型通信。任务选择由 `runtime/planning/planner.py` 编排；创建墨子任务由固定脚本完成。
 
-`roles.py` 定义五个角色，`prompt_loader.py` 读取根目录 `prompts/` 中各角色的提示词，`model_client.py` 调用兼容 Chat Completions 的模型服务。`runtime/planning/planner.py` 组织五个 Agent 的调用。模型地址见 `config/llm.json`，密钥优先从 `MOZI_QWEN_API_KEY` 环境变量读取，也可使用本项目 `config/qwen.key.local`。
+| 代码 | 职责 | 主要输入 → 输出 |
+| --- | --- | --- |
+| `roles.py` | 联合指挥、空军、预警机、海军、陆军五个角色及各自的 `role_key` | 提示词与上下文 → 结构化方案 |
+| `prompt_loader.py` | 按角色读取根目录 `prompts/` | 角色名 → 提示词文本 |
+| `model_client.py` | 读取 `config/llm.json`、调用兼容 Chat Completions 的服务、解析 JSON、统计用量 | system prompt 与 context → JSON 对象或 `ModelError` |
+| `monitor_log.py` | 把输入、原始输出、错误、耗时和跳过事件写入本地 JSONL | Agent 事件 → `runs/agent_monitor/events.jsonl` |
+| `__init__.py` | 导出五个角色类 | Python 包入口 |
 
-`python run.py agent-status` 查看注册和配置，不发起模型请求；`plan` 和 `live-orchestrate` 才调用 LLM。
+`model_client.py` 每次请求只发送本轮 system prompt 和 context；跨轮态势摘要由 `rules/situation_memory.py` 生成，再由规划器注入。模型密钥只从环境变量或本机密钥文件读取，不写入监控日志。修改提示词去 `prompts/`；修改调用顺序去 `runtime/planning/`。

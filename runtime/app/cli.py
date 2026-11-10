@@ -21,6 +21,7 @@ from agents.model_client import AgentConfig
 from runtime.contracts import AGENT_OWNERS
 from runtime.app.daemon import AutomaticMissionRunner
 from runtime.execution.area_cleanup import OwnedAreaGarbageCollector
+from runtime.execution.jammer_controller import JammerEscortController
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -168,6 +169,18 @@ def _auto_run(registry: SkillRegistry, deployment_path: str,
         raise ValueError("部署配置缺少 auto_instruction")
     config = AgentConfig.load(deployment["llm_config"])
     planner = HierarchicalSkillPlanner(config, registry)
+    jammer_settings = deployment.get("jammer_support") or {}
+    jammer_controller = None
+    if jammer_settings.get("enabled", False):
+        jammer_controller = JammerEscortController(
+            script_path=ROOT / "scripts" / "powershell" / "09-电子干扰伴随.ps1",
+            run_root=ROOT / "runs" / "jammer_support",
+            powershell=deployment.get("powershell_executable"),
+            trail_km=float(jammer_settings.get("trail_km", 20)),
+            follow_interval_sec=float(jammer_settings.get("follow_interval_sec", 30)),
+            launch_retry_sec=float(jammer_settings.get("launch_retry_sec", 30)),
+            max_wait_sim_sec=float(jammer_settings.get("max_wait_sim_sec", 1800)),
+        )
     runner = AutomaticMissionRunner(
         collector=lambda: collect_live_situation(
             host=deployment["mozi_host"],
@@ -182,6 +195,7 @@ def _auto_run(registry: SkillRegistry, deployment_path: str,
         poll_interval_sec=float(deployment.get("poll_interval_sec", 10)),
         replan_interval_sec=float(deployment.get("replan_interval_sec", 300)),
         script_parallelism=deployment.get("script_parallelism", 2),
+        jammer_controller=jammer_controller,
     )
     print("当前墨子态势将发送至模型服务：", config.base_url, flush=True)
     try:

@@ -112,6 +112,20 @@ class AgentActivationAndJointRefreshTests(unittest.TestCase):
         self.assertTrue(all(item["group"] in {"sea", "air"}
                             for item in navy_memory["active_contact_trends"]))
 
+    def test_sole_enemy_early_warning_axis_reaches_joint_and_air_agent(self):
+        self.situation["contacts"]["air"] = [{
+            "guid": "dddddddd-0000-0000-0000-000000000001",
+            "name": "卡-29RLD预警直升机", "lat": 20, "lon": 134,
+        }]
+        self.plan()
+        joint = self.client.joint_contexts[0]["situation"]
+        axis = joint["operational_rules"]["suspected_air_attack_axis"]
+        self.assertEqual(axis["status"], "suspected")
+        self.assertEqual(axis["contact_guid"], self.situation["contacts"]["air"][0]["guid"])
+        self.assertEqual(len(joint["contacts"]["air"]), 1)
+        self.assertEqual(self.client.service_contexts["component_air"]["operational_rules"]
+                         ["suspected_air_attack_axis"], axis)
+
 
 if __name__ == "__main__":
     unittest.main()

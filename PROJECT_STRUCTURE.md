@@ -39,6 +39,22 @@
 └─ docs/                  架构与扩展说明
 ```
 
+## 目录 README 索引
+
+每个项目源码目录都在本目录下放置了 `README.md`，说明所含代码的职责、主要输入输出和修改入口。
+
+| 层次 | 说明入口 |
+| --- | --- |
+| Agent 与提示词 | [agents/README.md](agents/README.md)、[prompts/README.md](prompts/README.md) |
+| 确定性规则与任务 Skill | [rules/README.md](rules/README.md)、[skills/README.md](skills/README.md)；`skills/air/`、`skills/navy/` 下七个任务目录各有 README |
+| 运行时编排 | [runtime/README.md](runtime/README.md)；其 `app/`、`mozi/`、`planning/`、`skills/`、`execution/` 子目录各有 README |
+| 固定脚本 | [scripts/README.md](scripts/README.md)、[scripts/powershell/README.md](scripts/powershell/README.md) |
+| 配置与调用示例 | [config/README.md](config/README.md)、[examples/README.md](examples/README.md) |
+| 监控前端与运行记录 | [monitor_web/README.md](monitor_web/README.md)、[runs/README.md](runs/README.md) |
+| 测试、文档与随附工具 | [tests/README.md](tests/README.md)、[docs/README.md](docs/README.md)、[tools/README.md](tools/README.md) |
+
+根目录文件：`run.py` 是自动推演和命令行入口；`monitor_agents.py` 是终端监控入口；`monitor_dashboard.py` 是网页监控入口；`启动Agent监控前端.cmd` 用于双击启动网页；`requirements.txt` 是 Python 依赖清单；`.gitignore` 排除密钥与运行数据；`README.md` 是使用说明；本文件是目录导航。
+
 ## 常改的地方
 
 | 要调整什么 | 文件或目录 |
@@ -59,6 +75,7 @@
 | 联合指挥方案何时刷新 | `rules/joint_refresh.py`；缓存位于运行中的规划器 |
 | 关键态势历史及提前重评 | `rules/situation_memory.py`、`rules/situation_refresh.py`；压缩历史保存在 `runs/automatic_state.json` |
 | 海军仅开局创建巡逻任务 | `rules/navy_patrol.py` |
+| 打击任务触发电子干扰机伴随 | `rules/jammer_support.py`、`runtime/execution/jammer_controller.py`、`scripts/powershell/09-电子干扰伴随.ps1`；说明见 [JAMMER_SUPPORT.md](docs/JAMMER_SUPPORT.md) |
 | 自动推演轮次与去重 | `runtime/app/daemon.py` |
 | 孤立区域清理 | `runtime/execution/area_cleanup.py` |
 

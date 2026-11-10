@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+import errno
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
@@ -202,7 +203,16 @@ def main(argv=None) -> int:
     if not config.log_dir:
         parser.error("模型配置缺少 log_dir")
     reader = EventLogReader(Path(config.log_dir) / "events.jsonl")
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), handler_factory(reader))
+    handler = handler_factory(reader)
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", args.port), handler)
+    except OSError as exc:
+        recoverable = exc.errno in {errno.EACCES, errno.EADDRINUSE}
+        recoverable = recoverable or getattr(exc, "winerror", None) in {10013, 10048}
+        if args.port != 8765 or not recoverable:
+            raise
+        print("默认端口 8765 无法监听，正在选择空闲端口。", flush=True)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     address = f"http://127.0.0.1:{server.server_port}/"
     print(f"Agent 监控前端：{address}", flush=True)
     print(f"历史日志：{reader.path}", flush=True)

@@ -57,6 +57,21 @@ class AwacsAreaTests(unittest.TestCase):
         self.assertTrue(all(_distance_km((20.3, 130.3), (p["lat"], p["lon"])) <= 300
                             for p in area["points"]))
 
+    def test_sole_enemy_early_warning_contact_orients_racetrack(self):
+        self.situation["contacts"]["air"] = [{
+            "guid": "dddddddd-0000-0000-0000-000000000001",
+            "name": "卡-29RLD预警直升机", "unit_type": "Aircraft",
+            "lat": 20.3, "lon": 134.5,
+        }]
+        area = self.area()
+        self.assertEqual(area["deployment"]["mode"], "threat")
+        self.assertAlmostEqual(area["deployment"]["bearing_deg"], 90, delta=2)
+        self.assertEqual(area["deployment"]["forward_km"], 0)
+        self.assertIn("疑似进攻轴向", area["remark"])
+        lat_span = max(p["lat"] for p in area["points"]) - min(p["lat"] for p in area["points"])
+        lon_span = max(p["lon"] for p in area["points"]) - min(p["lon"] for p in area["points"])
+        self.assertGreater(lat_span, lon_span)
+
     def test_max_forward_preserves_300_km_limit(self):
         self.call["area"] = {"pattern": "racetrack", "attack_bearing_deg": 45,
                              "forward_km": 284}
