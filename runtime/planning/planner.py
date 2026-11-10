@@ -189,6 +189,11 @@ class HierarchicalSkillPlanner:
                 selected = call.get("unit_guids") or []
                 if any(str(guid).strip().strip("{}").lower() not in own_ids for guid in selected):
                     raise ValueError(f"{owner} Agent 使用了不属于 own_units 的主任务单元")
+                if owner == "air":
+                    escorts = call.get("escort_unit_guids") or []
+                    if any(str(guid).strip().strip("{}").lower() not in own_ids
+                           for guid in escorts):
+                        raise ValueError("air Agent 使用了不属于 own_units 的护航单元")
         skill_calls = [call for owner in AGENT_OWNERS for call in proposals[owner]["skill_calls"]]
         return {
             "version": 1,

@@ -13,6 +13,7 @@
 | `test_awacs_triggers.py` | `rules/awacs_triggers.py`，开局、敌情、回撤、换班 |
 | `test_live_situation_roles.py` | `runtime/mozi/live_situation.py`，己方单位与接触分类 |
 | `test_jammer_support.py` | 飞机打击任务触发、目标和空闲检查、单机派遣与后方伴随航点 |
+| `test_jammer_boundary.py` | 空军 Agent 不见干扰机、LLM 护航字段和直接方案都不能分配干扰机；普通战斗机护航仍可用 |
 | `test_jammer_powershell.py` | 固定干扰脚本对本地模拟 REST 的起飞、设备、航点和 UTF-8 请求 |
 | `test_monitor_dashboard.py` | `monitor_web/server.py`，历史场次、分页与导出 |
 | `test_plan_adapter.py` | `runtime/planning/plan_adapter.py`，字段及点列表转换 |

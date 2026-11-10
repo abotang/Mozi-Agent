@@ -13,6 +13,7 @@ from runtime.skills.registry import SkillRegistry
 from rules.awacs_area import make_awacs_area
 from rules.awacs_deployment import validate_deployments
 from rules.awacs_triggers import prepare_area, validate_call
+from rules.jammer_support import is_jammer
 
 
 _GUID = re.compile(r"^\{?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}?$")
@@ -188,6 +189,8 @@ def validate_plan(plan: dict[str, Any], situation: dict[str, Any], registry: Ski
                 raise ValueError(f"{call.call_id} 单元类型 {unit_type or '未知'} 不属于 {spec.service} 军种")
             if unit_type and unit_type not in spec.unit_types:
                 raise ValueError(f"{call.call_id} 单元类型 {unit_type} 不适用 {spec.skill_id}")
+            if spec.service == "air" and is_jammer(unit_index[guid][1]):
+                raise ValueError(f"{call.call_id} 干扰机只能由独立电子干扰规则控制，不能作为 {spec.skill_id} 主任务单元")
             normalized_units.append(guid)
         assigned_units.update({guid: (call.call_id, call.mission_name) for guid in normalized_units})
 
@@ -197,6 +200,8 @@ def validate_plan(plan: dict[str, Any], situation: dict[str, Any], registry: Ski
             guid = _guid(raw_guid, f"{call.call_id}.escort_unit_guids")
             if guid not in unit_index or unit_index[guid][0] != "air":
                 raise ValueError(f"护航单元必须是蓝方空军单位：{guid}")
+            if is_jammer(unit_index[guid][1]):
+                raise ValueError(f"{call.call_id} 干扰机只能由独立电子干扰规则控制，不能通过护航字段分配")
             if guid in normalized_units:
                 raise ValueError(f"主攻单元不能同时作为护航单元：{guid}")
             if guid in assigned_units:
