@@ -43,6 +43,49 @@ class PlanAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "冲突字段 unitGuids 和 unit_guids"):
             normalize_plan({"version": 1, "skill_calls": [call]})
 
+    def test_observed_sea_target_guid_alias_reaches_validation(self):
+        original = deepcopy(self.plan["skill_calls"][2])
+        target = original["target_contact_guids"][0]
+        for alias in ("target_guid", "target_guids", "target_contact_guid",
+                      "targetContactGuid", "targetContactGuids"):
+            with self.subTest(alias=alias):
+                call = deepcopy(original)
+                call.pop("target_contact_guids")
+                call[alias] = target
+                plan = {"version": 1, "skill_calls": [call]}
+                normalized = normalize_plan(plan)["skill_calls"][0]
+                self.assertEqual(normalized["target_contact_guids"], [target])
+                self.assertNotIn(alias, normalized)
+                self.assertIn(alias, call)
+                validated = validate_plan(plan, self.situation, self.registry)
+                self.assertEqual(validated[0].target_contact_guids, (target,))
+
+    def test_equivalent_target_aliases_compare_as_lists(self):
+        call = deepcopy(self.plan["skill_calls"][2])
+        target = call["target_contact_guids"][0]
+        call.update({"target_guid": target, "target_guids": [target],
+                     "target_contact_guid": target, "targetContactGuid": target})
+        normalized = normalize_plan({"version": 1, "skill_calls": [call]})["skill_calls"][0]
+        self.assertEqual(normalized["target_contact_guids"], [target])
+        self.assertTrue(all(key not in normalized for key in (
+            "target_guid", "target_guids", "target_contact_guid", "targetContactGuid")))
+
+    def test_conflicting_target_aliases_rejected_instead_of_overwritten(self):
+        call = deepcopy(self.plan["skill_calls"][2])
+        call["target_guid"] = "eeeeeeee-0000-0000-0000-000000000099"
+        with self.assertRaisesRegex(ValueError, "冲突字段 target_guid 和 target_contact_guids"):
+            normalize_plan({"version": 1, "skill_calls": [call]})
+
+    def test_target_alias_does_not_resolve_names_or_stale_ids(self):
+        for target in ("敌舰接触-1", "eeeeeeee-0000-0000-0000-000000000099"):
+            with self.subTest(target=target):
+                call = deepcopy(self.plan["skill_calls"][2])
+                call.pop("target_contact_guids")
+                call["target_guid"] = target
+                with self.assertRaises(ValueError):
+                    validate_plan({"version": 1, "skill_calls": [call]},
+                                  self.situation, self.registry)
+
     def test_missing_strike_target_is_not_invented(self):
         call = deepcopy(self.plan["skill_calls"][2])
         call["target_contact_guids"] = []

@@ -17,6 +17,7 @@ RULE_OWNERS = {
     "patrol_spacing": {"air", "awacs"},
     "suspected_air_attack_axis": {"air", "awacs"},
     "air_strike_opportunities": {"air"},
+    "sea_strike_allocation": {"air"},
 }
 
 

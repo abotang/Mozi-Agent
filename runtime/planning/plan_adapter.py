@@ -10,6 +10,8 @@ CALL_ALIASES = {
     "callId": "call_id", "skillId": "skill_id", "missionName": "mission_name",
     "unitGuids": "unit_guids", "escortUnitGuids": "escort_unit_guids",
     "targetContactGuids": "target_contact_guids", "loadoutGuid": "loadout_guid",
+    "target_guid": "target_contact_guids", "target_guids": "target_contact_guids",
+    "target_contact_guid": "target_contact_guids", "targetContactGuid": "target_contact_guids",
     "existingMissionGuid": "existing_mission_guid",
 }
 
@@ -45,6 +47,16 @@ def normalize_plan(raw: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(call, dict):
             raise ValueError(f"skill_calls[{index}] 必须是对象")
         label = f"skill_calls[{index}]"
+        # Compare target aliases after scalar/list normalization. This accepts
+        # target_guid="G" together with target_contact_guids=["G"], but never
+        # chooses one conflicting target over another or resolves target names.
+        target_fields = ["target_contact_guids"] + [
+            old for old, new in CALL_ALIASES.items() if new == "target_contact_guids"]
+        for key in target_fields:
+            if isinstance(call.get(key), str):
+                call[key] = [call[key]]
+            elif key in call and call[key] is None:
+                call[key] = []
         for old, new in CALL_ALIASES.items():
             _alias(call, old, new, label)
         for key in ("unit_guids", "escort_unit_guids", "target_contact_guids"):

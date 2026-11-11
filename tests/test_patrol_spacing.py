@@ -115,7 +115,7 @@ class PatrolSpacingTests(unittest.TestCase):
                      "99999999-0000-0000-0000-000000000002",
                      "88888888-0000-0000-0000-000000000002")]
         strike = {"call_id": "strike-sea", "skill_id": "air.sea_strike",
-                  "mission_name": "strike-sea", "unit_guids": [STRIKER],
+                  "mission_name": "strike-sea", "unit_guids": [STRIKER, "aaaaaaaa-0000-0000-0000-000000000090"],
                   "target_contact_guids": ["eeeeeeee-0000-0000-0000-000000000001"],
                   "reason": "攻击当前接触"}
         self.assertEqual(len(self.validate([strike])), 1)

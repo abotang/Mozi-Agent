@@ -1,11 +1,15 @@
 """独立读取墨子 WebSocket 态势和 REST 想定时间。"""
 
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from urllib.request import urlopen
 import zlib
 
 from runtime.contracts import SERVICE_UNIT_TYPES
+from rules.awacs_area import is_awacs
+from rules.jammer_support import is_jammer
+from rules.air_weapon_roles import read_current_loadout
 from runtime.mozi.mission_assignments import read_blue_mission_assignments
 from runtime.mozi.patrol_areas import read_blue_patrol_areas
 
@@ -83,6 +87,15 @@ def collect_live_situation(*, host="127.0.0.1", rest_port=8082,
                     and row.get("AirCraftInFacility") is True and row.get("id") not in seen):
                 air.append(_item(row, airborne=False))
                 seen.add(row["id"])
+    fighters = [row for row in air if not is_awacs(row) and not is_jammer(row)]
+    if fighters:
+        # Read only each current loadout. Four bounded requests keep the
+        # polling latency reasonable without flooding the local Mozi server.
+        with ThreadPoolExecutor(max_workers=min(4, len(fighters))) as pool:
+            pending = {pool.submit(read_current_loadout, api_base, str(row["guid"])): row
+                       for row in fighters}
+            for future in as_completed(pending):
+                pending[future].update(future.result())
     navy = [_item(row) for row in active if row.get("UnitType") in SERVICE_UNIT_TYPES["navy"]]
     army = [_item(row) for row in active if row.get("UnitType") in SERVICE_UNIT_TYPES["army"]]
     submarine = [_item(row) for row in active if row.get("UnitType") == "Submarine"]
@@ -104,8 +117,14 @@ def collect_live_situation(*, host="127.0.0.1", rest_port=8082,
     start, end, initial = _times(api_base)
     # Read actual Mozi mission assignments, including missions not created by
     # this project. Failure must stop planning rather than mark aircraft free.
+    active_strike_targets: set[str] = set()
     mission_assignments = read_blue_mission_assignments(
-        api_base, side["id"], {str(row["guid"]) for row in air})
+        api_base, side["id"], {str(row["guid"]) for row in air},
+        active_strike_target_guids=active_strike_targets)
+    # Use live target GUIDs, not mission names or historical contacts, to avoid
+    # sending a second aircraft group to an already covered sea target.
+    current_sea_guids = {str(row["guid"]).strip().strip("{}").lower()
+                         for row in contacts["sea"]}
     # Use Mozi's current mission-area linkage, not only this project's saved
     # reports; manual and older patrols must also constrain new air stations.
     existing_areas = read_blue_patrol_areas(api_base, side["id"])
@@ -116,4 +135,7 @@ def collect_live_situation(*, host="127.0.0.1", rest_port=8082,
             "units": {"air": air, "navy": navy, "army": army,
                       "submarine": submarine},
             "contacts": contacts, "existing_missions": [], "existing_areas": existing_areas,
-            "mission_assignments": mission_assignments}
+            "mission_assignments": mission_assignments,
+            "active_air_sea_target_guids": sorted(
+                active_strike_targets.intersection(current_sea_guids)),
+            "weapon_inventory_live": True}

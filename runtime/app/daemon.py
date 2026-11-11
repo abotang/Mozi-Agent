@@ -57,7 +57,15 @@ def _mission_exists(api_base: str, mission_guid: str) -> bool:
             data = json.load(response)
         # A failed business response cannot prove the task was deleted.
         # Preserve deduplication until a successful query confirms absence.
-        if not isinstance(data, dict) or data.get("code") != 0 or "data" not in data:
+        if not isinstance(data, dict):
+            return True
+        # Mozi explicitly reports a deleted mission as code 101, not code 0.
+        # Only this exact response proves absence; other business errors keep
+        # the deduplication record until the next successful query.
+        if (data.get("code") == 101 and data.get("message") == "任务不存在"
+                and "data" in data and data["data"] is None):
+            return False
+        if data.get("code") != 0 or "data" not in data:
             return True
         return bool(data.get("data"))
     except Exception:
@@ -159,8 +167,48 @@ class AutomaticMissionRunner:
         for name, record in list(self.state["missions"].items()):
             if record.get("guid") and not _mission_exists(situation["api_base"], record["guid"]):
                 del self.state["missions"][name]
+        self._reconcile_uncertain_missions(situation)
         self._reconcile_uncertain_awacs(situation)
         self._save_state()
+
+    def _reconcile_uncertain_missions(self, situation: dict):
+        """Unlock an old failed creation only after a live absence check.
+
+        Existing AWACS uncertainty has its own stricter recovery rule.
+        """
+        # Only a verified manual deletion report authorizes release of an old
+        # uncertainty lock. A missing task alone must not unlock arbitrary
+        # interrupted executions (which may have other partial side effects).
+        deleted_names = set()
+        for path in self.state_path.parent.glob("cleanup-failed-*.json"):
+            try:
+                audit = json.loads(path.read_text(encoding="utf-8-sig"))
+                if audit.get("success") is not True or audit.get("missionDeleted") is not True:
+                    continue
+                guid = str(audit["missionGuid"]).strip("{}").lower()
+                rows = audit["responses"]["missionsBefore"]["data"]
+                deleted_names.update(str(row["name"]) for row in rows
+                                     if str(row.get("id", "")).strip("{}").lower() == guid)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                continue
+        pending = {name: record for name, record in self.state.get("uncertain", {}).items()
+                   if name in deleted_names and isinstance(record, dict)
+                   and record.get("skill_id") != "air.early_warning"}
+        if not pending:
+            return
+        try:
+            live = read_blue_missions(situation["api_base"], situation["side"]["guid"])
+        except Exception:
+            return
+        names = {mission["name"] for mission in live}
+        occupied = {str(guid).strip("{}").lower()
+                    for guid in situation.get("mission_assignments", {})}
+        for name, record in pending.items():
+            units = record.get("unit_guids")
+            if (name not in names and isinstance(units, list)
+                    and not any(str(guid).strip("{}").lower() in occupied for guid in units)):
+                self.state["uncertain"].pop(name, None)
+                self.output(f"已核对并解除失败任务锁：{name}；当前墨子无同名任务且原单元空闲")
 
     def _reconcile_uncertain_awacs(self, situation: dict):
         """Release a stale AWACS lock only after a successful live task audit."""
@@ -421,6 +469,7 @@ class AutomaticMissionRunner:
                     workers = min(self.script_parallelism, len(invocations))
                     self.output(f"[第 {cycles} 轮] 执行 {len(invocations)} 项任务脚本；最大并行数 {workers}")
                     failures = []
+                    cleaned_failure = False
                     execute_one = getattr(self.executor, "execute_prevalidated", None)
                     if execute_one is None:
                         execute_one = lambda item: self.executor.execute([item], dry_run=False)
@@ -456,9 +505,17 @@ class AutomaticMissionRunner:
                                 self._save_state()
                                 self.output(f"已{'更新' if item.call.existing_mission_guid else '创建'}：{item.call.mission_name} ({guid})")
                             except ScriptExecutionError as exc:
-                                uncertain = any(result.phase == "execute" for result in exc.results)
+                                cleaned = any(result.phase == "execute"
+                                              and "[NEW_MISSION_CLEANED]" in result.stderr
+                                              for result in exc.results)
+                                uncertain = (not cleaned and any(result.phase == "execute"
+                                                                 for result in exc.results))
                                 if uncertain:
                                     self._mark_uncertain(item, str(exc))
+                                elif cleaned:
+                                    self.state["uncertain"].pop(item.call.mission_name, None)
+                                    cleaned_failure = True
+                                    self.output(f"失败任务已删除并回读确认：{item.call.mission_name}；下轮重新规划")
                                 record_dispatch_outcome(memory, situation["scenario"]["start_time"],
                                                         item.call.mission_name, item.call.skill_id,
                                                         "uncertain" if uncertain else "failed",
@@ -474,6 +531,11 @@ class AutomaticMissionRunner:
                                 self._save_state()
                                 failures.append(f"{item.call.mission_name}: {exc}")
                                 self.output(f"创建结果未确认：{item.call.mission_name}：{exc}")
+                    if cleaned_failure:
+                        # Re-read contacts and rebuild the plan on the next poll.
+                        last_signature = None
+                        last_planned_at = -float("inf")
+                        last_planned_contacts = None
                     # A failed peer task must not delay support for a strike
                     # that was created successfully in this same batch.
                     self._update_jammer(situation, cycles)

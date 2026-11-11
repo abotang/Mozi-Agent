@@ -14,7 +14,9 @@ from rules.awacs_area import make_awacs_area
 from rules.awacs_deployment import validate_deployments
 from rules.awacs_triggers import prepare_area, validate_call
 from rules.jammer_support import is_jammer
+from rules.air_weapon_roles import compatible_with_skill, role_for_skill
 from rules.patrol_spacing import validate_patrol_spacing
+from rules.sea_strike_allocation import validate_groups
 
 
 _GUID = re.compile(r"^\{?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}?$")
@@ -213,6 +215,12 @@ def validate_plan(plan: dict[str, Any], situation: dict[str, Any], registry: Ski
                 raise ValueError(f"{call.call_id} 单元类型 {unit_type} 不适用 {spec.skill_id}")
             if spec.service == "air" and is_jammer(unit_index[guid][1]):
                 raise ValueError(f"{call.call_id} 干扰机只能由独立电子干扰规则控制，不能作为 {spec.skill_id} 主任务单元")
+            if role_for_skill(spec.skill_id) and not call.loadout_guid and not compatible_with_skill(
+                    unit_index[guid][1], spec.skill_id,
+                    live=bool(situation.get("weapon_inventory_live"))):
+                raise ValueError(
+                    f"{call.call_id} 飞机 {unit_index[guid][1].get('name', guid)} "
+                    f"当前挂载无可用{spec.target_kind}打击武器或挂载信息未知，不能执行 {spec.skill_id}")
             normalized_units.append(guid)
         assigned_units.update({guid: (call.call_id, call.mission_name) for guid in normalized_units})
 
@@ -294,4 +302,5 @@ def validate_plan(plan: dict[str, Any], situation: dict[str, Any], registry: Ski
     validate_patrol_spacing(calls, situation.get("existing_areas", []),
                             situation=situation)
     validate_aircraft_availability(calls, situation)
+    validate_groups(calls, situation)
     return calls

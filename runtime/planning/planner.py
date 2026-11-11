@@ -27,6 +27,8 @@ from rules.situation_memory import filter_brief
 from rules.threat_axis import suspected_air_attack_axis
 from rules.jammer_support import is_jammer
 from rules.air_strike_review import strike_opportunities, review_focus
+from rules.air_allocation import fighter_allocation
+from rules.sea_strike_allocation import allocation, apply_allocation
 from rules.agent_context import service_rules, service_missions
 from rules.plan_review import merge_review_calls
 
@@ -129,6 +131,13 @@ class HierarchicalSkillPlanner:
         # contacts and aircraft positions; no loadout-radius lookup is made.
         rules["air_strike_opportunities"] = strike_opportunities(
             situation, catalogs["air"], own_unit_rows["air"])
+        rules["sea_strike_allocation"] = allocation(situation)
+        # Do not spend a model review on a sea strike that cannot form a pair.
+        grouped_targets = {g["target_contact_guid"]
+                           for g in rules["sea_strike_allocation"]["groups"]}
+        sea_options = rules["air_strike_opportunities"]["eligible_by_skill"]["air.sea_strike"]
+        rules["air_strike_opportunities"]["eligible_by_skill"]["air.sea_strike"] = [
+            row for row in sea_options if row["contact_guid"] in grouped_targets]
         skips = {
             owner: skip_reason(owner, own_unit_rows[owner], catalogs[owner],
                                situation["contacts"], rules)
@@ -196,6 +205,7 @@ class HierarchicalSkillPlanner:
                 "task_skills": catalogs[owner],
             }
             if owner == "air":
+                context["fighter_allocation"] = fighter_allocation(situation)
                 context["patrol_updates"] = deepcopy(patrol_updates)
             if situation.get("situation_memory"):
                 context["situation_memory"] = deepcopy(
@@ -298,6 +308,27 @@ class HierarchicalSkillPlanner:
                     if any(str(guid).strip().strip("{}").lower() not in own_ids
                            for guid in escorts):
                         raise ValueError("air Agent 使用了不属于 own_units 的护航单元")
+        # Apply after optional model review and ownership checks, so a later
+        # review cannot undo the deterministic minimum-two distribution.
+        air = proposals["air"]
+        allocated, allocation_report = apply_allocation(air["skill_calls"], situation)
+        if allocation_report is not None:
+            air["model_summary"] = air.get("summary", "")
+            air["skill_calls"] = allocated
+            air["sea_strike_allocation"] = allocation_report
+            distribution = "、".join(
+                f"{g['target_name']} {len(g['unit_guids'])}架"
+                for g in allocation_report["groups"])
+            air["summary"] = (str(air.get("summary") or "") +
+                "；对海规则实际分配：" + (distribution or "无满足双机条件的新任务，待命") +
+                f"；未分配对海飞机{len(allocation_report['waiting_unit_guids'])}架")
+            if allocation_report.get("rejected_calls"):
+                air["summary"] += (f"；暂缓{len(allocation_report['rejected_calls'])}项无效对海调用："
+                                   "目标缺失或已不在当前水面接触，其他合法任务继续")
+            trace = getattr(self.client, "trace_event", None)
+            if callable(trace):
+                trace("component_air", "rule_allocation", reason="对海目标至少双机，整数均分",
+                      output=deepcopy(allocation_report))
         skill_calls = [call for owner in AGENT_OWNERS for call in proposals[owner]["skill_calls"]]
         return {
             "version": 1,

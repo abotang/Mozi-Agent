@@ -10,28 +10,105 @@
   },
   "units": {
     "air": [
-      {"guid": "aaaaaaaa-0000-0000-0000-000000000001", "name": "战斗机-1", "unit_type": "Aircraft", "lat": 20.0, "lon": 130.0},
-      {"guid": "aaaaaaaa-0000-0000-0000-000000000002", "name": "战斗机-2", "unit_type": "Aircraft", "lat": 20.1, "lon": 130.1},
-      {"guid": "aaaaaaaa-0000-0000-0000-000000000003", "name": "反舰机-1", "unit_type": "Aircraft", "lat": 20.2, "lon": 130.2},
-      {"guid": "aaaaaaaa-0000-0000-0000-000000000004", "name": "预警机-1", "unit_type": "Aircraft", "lat": 20.3, "lon": 130.3}
+      {
+        "guid": "aaaaaaaa-0000-0000-0000-000000000001",
+        "name": "战斗机-1",
+        "unit_type": "Aircraft",
+        "lat": 20.0,
+        "lon": 130.0
+      },
+      {
+        "guid": "aaaaaaaa-0000-0000-0000-000000000002",
+        "name": "战斗机-2",
+        "unit_type": "Aircraft",
+        "lat": 20.1,
+        "lon": 130.1
+      },
+      {
+        "guid": "aaaaaaaa-0000-0000-0000-000000000003",
+        "name": "反舰机-1",
+        "unit_type": "Aircraft",
+        "lat": 20.2,
+        "lon": 130.2,
+        "strike_capabilities": [
+          "air",
+          "sea"
+        ],
+        "weapon_info_status": "ok"
+      },
+      {
+        "guid": "aaaaaaaa-0000-0000-0000-000000000004",
+        "name": "预警机-1",
+        "unit_type": "Aircraft",
+        "lat": 20.3,
+        "lon": 130.3
+      },
+      {
+        "guid": "aaaaaaaa-0000-0000-0000-000000000090",
+        "name": "反舰机-2",
+        "unit_type": "Aircraft",
+        "lat": 20.2,
+        "lon": 130.2,
+        "strike_capabilities": [
+          "air",
+          "sea"
+        ],
+        "weapon_info_status": "ok"
+      }
     ],
     "navy": [
-      {"guid": "bbbbbbbb-0000-0000-0000-000000000001", "name": "驱逐舰-1", "unit_type": "Ship", "lat": 19.0, "lon": 132.0},
-      {"guid": "bbbbbbbb-0000-0000-0000-000000000002", "name": "驱逐舰-2", "unit_type": "Ship", "lat": 19.2, "lon": 132.2}
+      {
+        "guid": "bbbbbbbb-0000-0000-0000-000000000001",
+        "name": "驱逐舰-1",
+        "unit_type": "Ship",
+        "lat": 19.0,
+        "lon": 132.0
+      },
+      {
+        "guid": "bbbbbbbb-0000-0000-0000-000000000002",
+        "name": "驱逐舰-2",
+        "unit_type": "Ship",
+        "lat": 19.2,
+        "lon": 132.2
+      }
     ],
     "army": [
-      {"guid": "cccccccc-0000-0000-0000-000000000001", "name": "地面雷达-1", "unit_type": "Facility", "lat": 18.0, "lon": 129.0}
+      {
+        "guid": "cccccccc-0000-0000-0000-000000000001",
+        "name": "地面雷达-1",
+        "unit_type": "Facility",
+        "lat": 18.0,
+        "lon": 129.0
+      }
     ]
   },
   "contacts": {
     "air": [
-      {"guid": "dddddddd-0000-0000-0000-000000000001", "name": "敌机接触-1", "unit_type": "Aircraft", "lat": 22.0, "lon": 132.0}
+      {
+        "guid": "dddddddd-0000-0000-0000-000000000001",
+        "name": "敌机接触-1",
+        "unit_type": "Aircraft",
+        "lat": 22.0,
+        "lon": 132.0
+      }
     ],
     "sea": [
-      {"guid": "eeeeeeee-0000-0000-0000-000000000001", "name": "敌舰接触-1", "unit_type": "Ship", "lat": 18.5, "lon": 135.0}
+      {
+        "guid": "eeeeeeee-0000-0000-0000-000000000001",
+        "name": "敌舰接触-1",
+        "unit_type": "Ship",
+        "lat": 18.5,
+        "lon": 135.0
+      }
     ],
     "land": [
-      {"guid": "ffffffff-0000-0000-0000-000000000001", "name": "地面目标接触-1", "unit_type": "Facility", "lat": 24.0, "lon": 135.0}
+      {
+        "guid": "ffffffff-0000-0000-0000-000000000001",
+        "name": "地面目标接触-1",
+        "unit_type": "Facility",
+        "lat": 24.0,
+        "lon": 135.0
+      }
     ],
     "submarine": []
   },

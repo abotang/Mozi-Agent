@@ -8,7 +8,10 @@
   "script": "03-飞机对海打击.ps1",
   "mission_type": "Strike",
   "classify": "SEA",
-  "unit_types": ["Aircraft", "飞机"],
+  "unit_types": [
+    "Aircraft",
+    "飞机"
+  ],
   "requires_area": false,
   "area_type_id": null,
   "requires_target": true,
@@ -16,5 +19,10 @@
   "supports_escort": true,
   "supports_loadout": true,
   "supports_routes": false,
-  "rules": ["目标必须是蓝方当前水面 contact GUID", "没有已探测舰艇时不得创建"]
+  "rules": [
+    "目标必须是蓝方当前水面 contact GUID",
+    "没有已探测舰艇时不得创建",
+    "每目标一个任务、至少2架飞机；不足时集中部分目标，只有1架待命",
+    "按sea_strike_allocation整数均分；每架飞机到目标不得超过1000公里"
+  ]
 }

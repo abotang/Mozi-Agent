@@ -467,6 +467,8 @@ class CompilerAndExecutorTests(unittest.TestCase):
                              deepcopy(area) if spec.requires_area else None),
                     "routes": None,
                 }
+                if spec.skill_id == "air.sea_strike":
+                    call["unit_guids"].append("aaaaaaaa-0000-0000-0000-000000000090")
                 plan = {"version": 1, "skill_calls": [call]}
                 calls = validate_plan(plan, self.situation, self.registry)
                 invocation = compiler.compile(calls, self.situation,

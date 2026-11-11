@@ -8,7 +8,9 @@
 | `executor.py` | `MissionInvocation` → PowerShell 7 进程、stdout JSON、任务 GUID 和报告路径校验；定义 `ScriptExecutionError` |
 | `area_cleanup.py` | 本项目创建区域的报告 + 当前任务回读 → 删除无任务实际使用的旧区域及专属参考点；墨子 missionList 滞后时逐个核对任务的当前巡逻区与警戒区 |
 | `side_doctrine.py` | 开局调用 PowerShell 7 脚本设置蓝方推演方接战临机目标，并核对回读结果 |
-| `jammer_controller.py` | 已创建的飞机打击任务 + 实时飞机态势 → 空闲干扰机出动、后方伴随、设备开启与停止；调用 `09-电子干扰伴随.ps1` |
+| `jammer_controller.py` | 已创建的飞机打击任务 + 实时飞机态势 → 确认主攻机升空后派空闲干扰机出动、后方伴随、设备开启与停止；调用 `09-电子干扰伴随.ps1` |
 | `__init__.py` | 包标记 |
 
 自动推演的任务级并发由 `runtime/app/daemon.py` 管理；单项任务内部仍按区域、任务、规则、单位与目标分配、回读顺序执行。具体墨子 API 步骤在 `scripts/powershell/Invoke-MoziBlueMissionPlan.ps1`。区域清理只处理报告可证明由本项目创建、且墨子确认没有任务实际使用的区域；任务详情无法核对时保留区域。
+
+战斗巡逻任务的巡逻区（405）和独立警戒区（106）分别记录在执行报告的 `area`、`alertArea` 中；每个新区域另写 `.area.<区域GUID>.json` 日志。`area_cleanup.py` 按任务和区域用途分别追踪新旧区域；更新后，旧区域即使仍列在 `missionList`，也须通过任务详情确认不再使用才删除。当前警戒区即使暂时没有 `missionList`，只要任务详情仍引用它就保留；读取异常时也保留。旧版 `.area.json` 日志继续支持。

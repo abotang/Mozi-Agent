@@ -35,10 +35,13 @@ class OwnedAreaGarbageCollector:
         self.get_json = get_json
         self.post_json = post_json
 
-    def _owned(self, side_guid: str) -> tuple[dict[str, set[str]], set[str]]:
+    def _owned(self, side_guid: str) -> tuple[dict[str, set[str]], dict[str, str], dict[str, list[tuple[str, str]]]]:
         owned: dict[str, set[str]] = {}
-        latest_area: dict[str, tuple[int, str, str]] = {}
-        mission_areas: dict[str, set[str]] = {}
+        # Patrol and alert areas are separate descendants of the same mission.
+        # Track each slot separately so its old area can be collected after an
+        # update without mistaking the other slot's current area for a replacement.
+        latest_area: dict[tuple[str, str], tuple[int, str, str]] = {}
+        mission_areas: dict[tuple[str, str], set[str]] = {}
         for path in self.run_root.glob("*/reports/*.json"):
             try:
                 payload = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -46,7 +49,11 @@ class OwnedAreaGarbageCollector:
                 continue
             if not isinstance(payload, dict):
                 continue
-            if path.name.endswith(".area.json"):
+            journal_suffix = path.name.rpartition(".area.")[2]
+            is_area_journal = (path.name.endswith(".area.json") or
+                               (journal_suffix.endswith(".json") and
+                                bool(_guid(journal_suffix[:-5]))))
+            if is_area_journal:
                 if (_guid(payload.get("sideGuid")) != side_guid
                         or payload.get("created") is not True):
                     continue
@@ -65,34 +72,39 @@ class OwnedAreaGarbageCollector:
             for task in tasks:
                 if not isinstance(task, dict):
                     continue
-                area = task.get("area")
-                if not isinstance(area, dict) or area.get("reused") is not False:
-                    continue
-                area_guid = _guid(area.get("guid"))
-                if not area_guid:
-                    continue
                 mission_guid = _guid(task.get("missionGuid"))
-                if mission_guid:
-                    mission_areas.setdefault(mission_guid, set()).add(area_guid)
-                    marker = (path.stat().st_mtime_ns, str(path), area_guid)
-                    if marker > latest_area.get(mission_guid, (-1, "", "")):
-                        latest_area[mission_guid] = marker
-                reference = area.get("reference")
-                refs = reference.get("data") if isinstance(reference, dict) else None
-                if isinstance(refs, list):
-                    owned.setdefault(area_guid, set()).update(
-                        ref for value in refs if (ref := _guid(value)))
-                else:
-                    owned.setdefault(area_guid, set())
-        # Only an earlier area of an updated task may have a stale missionList.
-        # Do not add ordinary linked areas to the expensive mission readback path.
-        previous = {area for mission, areas in mission_areas.items()
+                for slot, key in (("patrol", "area"), ("alert", "alertArea")):
+                    area = task.get(key)
+                    if not isinstance(area, dict) or area.get("reused") is not False:
+                        continue
+                    area_guid = _guid(area.get("guid"))
+                    if not area_guid:
+                        continue
+                    if mission_guid:
+                        lineage = (mission_guid, slot)
+                        mission_areas.setdefault(lineage, set()).add(area_guid)
+                        marker = (path.stat().st_mtime_ns, str(path), area_guid)
+                        if marker > latest_area.get(lineage, (-1, "", "")):
+                            latest_area[lineage] = marker
+                    reference = area.get("reference")
+                    refs = reference.get("data") if isinstance(reference, dict) else None
+                    if isinstance(refs, list):
+                        owned.setdefault(area_guid, set()).update(
+                            ref for value in refs if (ref := _guid(value)))
+                    else:
+                        owned.setdefault(area_guid, set())
+        # A stale area may remain in ScenArea.missionList after the mission
+        # switches to a new patrol or alert area. Verify against Mission detail.
+        previous = {area: lineage[1] for lineage, areas in mission_areas.items()
                     if len(areas) > 1 for area in areas
-                    if area != latest_area[mission][2]}
-        return owned, previous
+                    if area != latest_area[lineage][2]}
+        current: dict[str, list[tuple[str, str]]] = {}
+        for (mission_guid, slot), (_, _, area_guid) in latest_area.items():
+            current.setdefault(area_guid, []).append((mission_guid, slot))
+        return owned, previous, current
 
     def _stale_patrol_links(self, base: str, area_guid: str, area: dict,
-                            links: list) -> bool:
+                            links: list, slot: str) -> bool:
         """Confirm every listed task now uses a different patrol/alert area."""
         old_points = {_guid(point.get("id")) for point in (area.get("points") or [])
                       if isinstance(point, dict)}
@@ -108,9 +120,10 @@ class OwnedAreaGarbageCollector:
                 return False
             data = detail.get("data") if isinstance(detail, dict) and detail.get("code") == 0 else None
             patrol = data.get("patrolmissionData") if isinstance(data, dict) else None
-            if not isinstance(patrol, dict) or not _guid(patrol.get("PatrolArea_ID")):
+            id_field = "AlertArea_ID" if slot == "alert" else "PatrolArea_ID"
+            if not isinstance(patrol, dict) or not _guid(patrol.get(id_field)):
                 return False
-            if _guid(patrol["PatrolArea_ID"]) == area_guid:
+            if _guid(patrol[id_field]) == area_guid:
                 return False
             current_points = set()
             for key in ("PatrolArea", "AlertArea"):
@@ -122,6 +135,47 @@ class OwnedAreaGarbageCollector:
             if old_points.intersection(current_points):
                 return False
         return True
+
+    def _current_area_usage(self, base: str, area_guid: str, area: dict,
+                            missions: list[tuple[str, str]]) -> bool | None:
+        """Check report-linked current areas even when ScenArea omits links.
+
+        ``True`` means a mission uses the area, ``False`` means no listed
+        mission does, and ``None`` means a failed or ambiguous read. Keeping an
+        ambiguous area is safer than deleting a live alert region.
+        """
+        old_points = {_guid(point.get("id")) for point in (area.get("points") or [])
+                      if isinstance(point, dict)}
+        for mission_guid, slot in missions:
+            try:
+                detail = self.get_json(f"{base}/Mission?Guid={quote(mission_guid)}")
+            except Exception:
+                return None
+            if not isinstance(detail, dict):
+                return None
+            if detail.get("code") == 101 and detail.get("message") == "任务不存在":
+                continue
+            data = detail.get("data") if detail.get("code") == 0 else None
+            patrol = data.get("patrolmissionData") if isinstance(data, dict) else None
+            if not isinstance(patrol, dict):
+                return None
+            id_field = "AlertArea_ID" if slot == "alert" else "PatrolArea_ID"
+            current_id = _guid(patrol.get(id_field))
+            if current_id:
+                if current_id == area_guid:
+                    return True
+                continue
+            # Some Mozi builds omit AlertArea_ID yet return its reference
+            # points. Never delete when those points still overlap this area.
+            points_key = "AlertArea" if slot == "alert" else "PatrolArea"
+            rows = patrol.get(points_key)
+            if not isinstance(rows, list) or not old_points:
+                return None
+            current_points = {_guid(point.get("id")) for point in rows
+                              if isinstance(point, dict)}
+            if old_points.intersection(current_points):
+                return True
+        return False
 
     @staticmethod
     def _areas(payload: dict, side_guid: str) -> dict[str, dict]:
@@ -145,7 +199,7 @@ class OwnedAreaGarbageCollector:
 
     def collect(self, situation: dict) -> dict:
         side_guid = _guid(situation["side"]["guid"])
-        owned, previous = self._owned(side_guid)
+        owned, previous, current = self._owned(side_guid)
         result = {"owned": len(owned), "deleted": [], "linked": [],
                   "stale_links": [], "errors": []}
         if not owned:
@@ -162,10 +216,23 @@ class OwnedAreaGarbageCollector:
                 continue
             if links:
                 if (area_guid not in previous
-                        or not self._stale_patrol_links(base, area_guid, area, links)):
+                        or not self._stale_patrol_links(base, area_guid, area, links,
+                                                        previous[area_guid])):
                     result["linked"].append(area_guid)
                     continue
                 result["stale_links"].append(area_guid)
+            elif area_guid in current:
+                # Alert areas may lack missionList even while Mission detail
+                # still references them; report order alone is not authority.
+                usage = self._current_area_usage(base, area_guid, area,
+                                                  current[area_guid])
+                if usage is True:
+                    result["linked"].append(area_guid)
+                    continue
+                if usage is None:
+                    result["errors"].append(
+                        f"{area_guid}: 当前任务关联不可核对；保留区域")
+                    continue
             response = self.post_json(f"{base}/ScenArea", {
                 "option": "delArea", "side": situation["side"]["name"],
                 "area_id": area["id"],

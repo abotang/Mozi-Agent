@@ -98,8 +98,21 @@ function Test-TaskConfig {
         }
         Assert-Condition ($Task.targetKind -in @('Aircraft','Ship','Facility','Submarine')) "$Key.targetKind 无效"
     }
+    if ($Key -eq 'airSeaStrike') {
+        # One sea target per mission; duplicate GUIDs cannot satisfy the pair minimum.
+        $uniqueStrikers = @($Task.unitGuids | ForEach-Object {
+            ([string]$_).Trim().Trim('{}').ToLowerInvariant()
+        } | Sort-Object -Unique)
+        Assert-Condition ($uniqueStrikers.Count -ge 2) "$Key 同一海上目标至少分配两架不同飞机"
+        Assert-Condition (@($Task.targetContactGuids).Count -eq 1) "$Key 每个任务只能分配一个海上目标"
+    }
     if ($Task.missionType -in @('Patrol','Support')) {
         Assert-Condition ($null -ne $Task.area) "$Key 必须配置 area"
+        if ($Task.missionType -eq 'Patrol') {
+            Assert-Condition ($null -ne $Task.alertArea) "$Key 必须配置独立警戒区 alertArea（巡逻区外扩100公里）"
+            Assert-Condition ([string]$Task.alertArea.typeId -eq '106') "$Key.alertArea.typeId 必须为106"
+            Assert-Condition (@($Task.alertArea.points).Count -ge 3) "$Key.alertArea.points 至少3点"
+        }
         if ([string]::IsNullOrWhiteSpace([string]$Task.area.existingAreaGuid)) {
             Assert-Condition (@($Task.area.points).Count -ge 3) "$Key.area.points 至少 3 点"
             foreach ($point in @($Task.area.points)) {
@@ -157,6 +170,27 @@ function Set-AircraftLoadoutIfRequested {
     $changes
 }
 
+function Assert-AirStrikeLoadouts {
+    param([string]$Key, [object]$Task)
+    if ($Key -notin @('airAirStrike','airSeaStrike','airLandStrike')) { return }
+    foreach ($unit in @($Task.unitGuids)) {
+        $inventory = Invoke-MoziGet "unitWeaponInfo?guid=$unit"
+        Assert-MoziSuccess $inventory "飞机 $unit 读取实际挂载"
+        Assert-Condition ($null -ne $inventory.data) "飞机 $unit 未返回实际挂载，不能创建打击任务"
+        $weapons = @($inventory.data | Where-Object { [string]$_.type -eq 'loadout' } |
+            ForEach-Object { $_.weaponRecord } |
+            Where-Object { $null -ne $_ -and [int]$_.curNum -gt 0 } |
+            ForEach-Object { [string]$_.name })
+        Assert-Condition ($weapons.Count -gt 0) "飞机 $unit 没有可确认的当前挂载武器"
+        $pattern = switch ($Key) {
+            'airAirStrike' { '空空|空对空|AIM-|PL-[0-9]|R-[0-9]|米卡|流星' }
+            'airSeaStrike' { '反舰|鱼叉|Harpoon|Exocet|飞鱼|鹰击|RBS-15|NSM|LRASM|对海' }
+            'airLandStrike' { '对地|空地|对陆|地面|炸弹|JDAM|GBU-|AGM-(?!84)|巡航导弹' }
+        }
+        Assert-Condition (@($weapons | Where-Object { $_ -match $pattern }).Count -gt 0) "飞机 $unit 当前挂载不适合 $Key：$($weapons -join '、')"
+    }
+}
+
 function New-ScenarioArea {
     param([object]$Area)
     if (-not [string]::IsNullOrWhiteSpace([string]$Area.existingAreaGuid)) {
@@ -182,7 +216,8 @@ function New-ScenarioArea {
         area_name=[string]$Area.name; area_remark=[string]$Area.remark; area_points=$areaPoints
     }
     Assert-MoziSuccess $create "创建区域 $($Area.name)"
-    $journalPath = (Resolve-AbsolutePath ([string]$config.reportPath) $configDirectory) + '.area.json'
+    $journalPath = (Resolve-AbsolutePath ([string]$config.reportPath) $configDirectory) +
+        '.area.' + ([string]$create.data.id).Trim('{}') + '.json'
     $journalDirectory = Split-Path -Parent $journalPath
     if (-not (Test-Path -LiteralPath $journalDirectory)) {
         New-Item -ItemType Directory -Path $journalDirectory -Force | Out-Null
@@ -253,16 +288,35 @@ function Get-OrCreateMission {
         }
     }
     Assert-MoziSuccess $create "创建任务 $($Task.name)"
+    # The outer task boundary can now compensate any later creation failure.
+    $script:cleanupMissionGuid = [string]$create.data.id
     Assert-Condition (-not [string]::IsNullOrWhiteSpace([string]$create.data.id)) "创建任务 $($Task.name) 未返回 GUID"
     [ordered]@{ guid=[string]$create.data.id; reused=$false; response=$create }
 }
 
+function Set-StrikeRules {
+    param([object]$Task, [string]$MissionGuid)
+    # Mozi defaults to 2/4-aircraft strike flights. A one-aircraft assignment
+    # can otherwise remain parked. Make every assigned striker a valid flight.
+    $response = Invoke-MoziPost 'Mission' @{
+        type='StrikeMissionRules'; MissionGuid=$MissionGuid
+        Rules=@{
+            name=[string]$Task.name; startTime=[string]$config.startTime
+            endTime=[string]$config.endTime; FlightSize='1'
+            GroupSize='1'; UseGroupSizeHardLimit=$false
+            MinAircraftReq_Strikers='1'
+        }
+    }
+    Assert-MoziSuccess $response "任务 $($Task.name) 设置单机打击编队"
+    $response
+}
+
 function Set-PatrolRules {
-    param([string]$TaskKey, [object]$Task, [string]$MissionGuid, [string]$AreaGuid, [object]$Outbound, [object]$OnStation)
+    param([string]$TaskKey, [object]$Task, [string]$MissionGuid, [string]$AreaGuid, [string]$AlertAreaGuid, [object]$Outbound, [object]$OnStation)
     $rules = @{
         name=[string]$Task.name; startTime=[string]$config.startTime; endTime=[string]$config.endTime
-        PatrolArea_ID=$AreaGuid; AlertArea_ID=$AreaGuid
-        OTR=($TaskKey -like 'air*'); IOPA=$false; IWWR=$false; AEOIPA=$false
+        PatrolArea_ID=$AreaGuid; AlertArea_ID=$AlertAreaGuid
+        OTR=($TaskKey -like 'air*'); IOPA=$true; IWWR=$true; AEOIPA=$false
         FlightSize='1'; AirFuel='0'; MinAircraftReq='0'; UseFlightSizeHardLimit=$false
         GroupSize='1'; UseGroupSizeHardLimit=$false
         TransitThrottle_Aircraft='2'; StationThrottle_Aircraft='1'; AttackThrottle_Aircraft='3'
@@ -338,6 +392,47 @@ function Set-EarlyWarningEmcon {
     [ordered]@{ write=$write; readback=$readback }
 }
 
+function Set-PatrolStrikeDoctrine {
+    param([string]$Key, [string]$MissionGuid, [string]$TaskName)
+    # Keep ROE and EMCON in separate requests. Mozi may ignore mixed writes.
+    $path = "DoctrineInfo?Guid=$MissionGuid&Type=Mission&IsEscort=false"
+    $before = Invoke-MoziGet $path
+    Assert-MoziSuccess $before "任务 $TaskName 读取任务条令"
+    $needsRadar = $Key -in @('airAirStrike','airSeaStrike','airLandStrike','shipSeaStrike')
+    $roeWrite = $null
+    $emconWrite = $null
+    if ([string]$before.data.General.ROE.ShootTourists -ne '1') {
+        $roeWrite = Invoke-MoziPost 'DoctrineInfo' @{
+            Guid=$MissionGuid; SubjectType='Mission'; IsEscort=$false
+            Value=@{ General=@{ ROE=@{ ShootTourists='1' } } }
+        }
+        Assert-MoziSuccess $roeWrite "任务 $TaskName 设置接战临机目标"
+    }
+    if ($needsRadar -and -not (Test-EarlyWarningEmcon $before)) {
+        $emconWrite = Invoke-MoziPost 'DoctrineInfo' @{
+            Guid=$MissionGuid; SubjectType='Mission'; IsEscort=$false
+            Value=@{ EMCSetting=@{
+                EMCON_AccordingSuperior=$false; Radar='1'; OECM='0'; Sonar='0'
+            } }
+        }
+        Assert-MoziSuccess $emconWrite "任务 $TaskName 设置打击电磁管控"
+    }
+    $after = Invoke-MoziGet $path
+    Assert-MoziSuccess $after "任务 $TaskName 回读任务条令"
+    for ($attempt=0; $attempt -lt 6 -and
+         ([string]$after.data.General.ROE.ShootTourists -ne '1' -or
+          ($needsRadar -and -not (Test-EarlyWarningEmcon $after))); $attempt++) {
+        Start-Sleep -Milliseconds 500
+        $after = Invoke-MoziGet $path
+        Assert-MoziSuccess $after "任务 $TaskName 回读任务条令"
+    }
+    Assert-Condition ([string]$after.data.General.ROE.ShootTourists -eq '1') "任务 $TaskName 未回读到接战临机目标为是"
+    if ($needsRadar) {
+        Assert-Condition (Test-EarlyWarningEmcon $after) "任务 $TaskName 未回读到雷达打开、干扰机和声纳静默"
+    }
+    [ordered]@{ before=$before; roeWrite=$roeWrite; emconWrite=$emconWrite; after=$after }
+}
+
 function Invoke-MissionOperation {
     param([string]$Type, [string]$MissionGuid, [string[]]$Ids, [string]$Description)
     if (@($Ids).Count -eq 0) { return $null }
@@ -349,8 +444,10 @@ function Invoke-MissionOperation {
 function Invoke-OneTask {
     param([string]$Key, [object]$Task)
     $loadouts = Set-AircraftLoadoutIfRequested $Task
+    Assert-AirStrikeLoadouts $Key $Task
     $mission = Get-OrCreateMission $Task $Key
     $area = $null
+    $alertArea = $null
     $outbound = $null
     $onStation = $null
     $rulesResponse = $null
@@ -360,13 +457,16 @@ function Invoke-OneTask {
         $area = New-ScenarioArea $Task.area
     }
     if ($Task.missionType -eq 'Patrol') {
+        $alertArea = New-ScenarioArea $Task.alertArea
         if ($null -ne $Task.routes) {
             $outbound = New-MissionRoute $Task.routes.outbound
             $onStation = New-MissionRoute $Task.routes.onStation
         }
-        $rulesResponse = Set-PatrolRules $Key $Task $mission.guid $area.guid $outbound $onStation
+        $rulesResponse = Set-PatrolRules $Key $Task $mission.guid $area.guid $alertArea.guid $outbound $onStation
     } elseif ($Task.missionType -eq 'Support') {
         $rulesResponse = Set-SupportRules $Key $Task $mission.guid $area.guid
+    } elseif ($Task.missionType -eq 'Strike') {
+        $rulesResponse = Set-StrikeRules $Task $mission.guid
     }
 
     # 规则更新可能清空分配，所以分配必须在规则之后。
@@ -383,13 +483,32 @@ function Invoke-OneTask {
     $target = Invoke-MissionOperation 'AssignUnitAsTarget' $mission.guid @($Task.targetContactGuids) "任务 $($Task.name) 分配目标"
     if ($Key -eq 'airEarlyWarning') {
         $doctrineResponse = Set-EarlyWarningEmcon $mission.guid ([string]$Task.name)
+    } elseif ($Task.missionType -in @('Patrol','Strike')) {
+        $doctrineResponse = Set-PatrolStrikeDoctrine $Key $mission.guid ([string]$Task.name)
     }
     $verify = Invoke-MoziGet "Mission?Guid=$($mission.guid)"
     Assert-MoziSuccess $verify "任务 $($Task.name) 回读"
 
+    $assignedIds = @($verify.data.missionBasicData.assignedCombatUnit | ForEach-Object {
+        if ($_.children -is [array] -and @($_.children).Count -gt 0) {
+            $_.children | ForEach-Object { [string]$_.key }
+        } else { [string]$_.key }
+    })
+    foreach ($requestedUnit in @($Task.unitGuids)) {
+        $normalized = ([string]$requestedUnit).Trim('{}')
+        Assert-Condition (@($assignedIds | Where-Object {
+            ([string]$_).Trim('{}') -ieq $normalized
+        }).Count -gt 0) "任务 $($Task.name) 未回读到主攻单元 $requestedUnit"
+    }
     if ($Task.missionType -eq 'Patrol') {
         Assert-Condition (@($verify.data.patrolmissionData.PatrolArea).Count -ge 3) "任务 $($Task.name) 未回读到巡逻区"
+        Assert-Condition (@($verify.data.patrolmissionData.AlertArea).Count -ge 3) "任务 $($Task.name) 未回读到警戒区"
+        Assert-Condition (([string]$verify.data.patrolmissionData.AlertArea_ID).Trim('{}') -ieq
+            ([string]$alertArea.guid).Trim('{}')) "任务 $($Task.name) 警戒区GUID回读不匹配"
+        Assert-Condition ($verify.data.patrolmissionData.IOPA -eq $true) "任务 $($Task.name) 未启用巡逻区外目标分析"
+        Assert-Condition ($verify.data.patrolmissionData.IWWR -eq $true) "任务 $($Task.name) 未启用武器射程内目标分析"
         if ($Key -like 'air*') {
+            Assert-Condition ([string]$verify.data.patrolmissionData.FlightSize -eq '1') "任务 $($Task.name) 巡逻编队规模回读不是单机"
             Assert-Condition ($verify.data.patrolmissionData.OTR -eq $true) "任务 $($Task.name) 未启用1/3规则"
         }
         if ($Key -eq 'airCombatPatrol') {
@@ -404,6 +523,8 @@ function Invoke-OneTask {
         }
     } elseif ($Task.missionType -eq 'Strike') {
         Assert-Condition (@($verify.data.strikeMissionData.targetList).Count -gt 0) "任务 $($Task.name) 未回读到打击目标"
+        Assert-Condition ([string]$verify.data.strikeMissionData.FlightSize -eq '1') "任务 $($Task.name) 未回读到单机打击编队"
+        Assert-Condition ([string]$verify.data.strikeMissionData.GroupSize -eq '1') "任务 $($Task.name) 未回读到单机编组"
     } elseif ($Task.missionType -eq 'Support') {
         Assert-Condition (@($verify.data.supportmissionData.area).Count -ge 1) "任务 $($Task.name) 未回读到支援区域"
         if ($Key -eq 'airEarlyWarning') {
@@ -424,7 +545,7 @@ function Invoke-OneTask {
 
     [ordered]@{
         key=$Key; name=[string]$Task.name; missionGuid=$mission.guid; reused=$mission.reused
-        loadouts=@($loadouts); area=$area; outboundRoute=$outbound; onStationRoute=$onStation
+        loadouts=@($loadouts); area=$area; alertArea=$alertArea; outboundRoute=$outbound; onStationRoute=$onStation
         rules=$rulesResponse; doctrine=$doctrineResponse; assign=$assign; escort=$escort; target=$target; verification=$verify
     }
 }
@@ -438,8 +559,30 @@ $runResult = [ordered]@{
 }
 
 foreach ($pair in $taskPairs) {
-    if (Test-EnabledTask $pair.task) {
+    if (-not (Test-EnabledTask $pair.task)) { continue }
+    $script:cleanupMissionGuid = ''
+    try {
         $runResult.tasks += Invoke-OneTask $pair.key $pair.task
+    } catch {
+        $originalError = $_.Exception.Message
+        $createdGuid = [string]$script:cleanupMissionGuid
+        if ([string]::IsNullOrWhiteSpace($createdGuid)) { throw }
+        try {
+            $deleted = Invoke-MoziPost 'MissionGant' @{
+                SideGuid=$script:sideGuid; MissionGuid=$createdGuid
+                MissionCommandType='DeleteMission'
+            }
+            Assert-MoziSuccess $deleted "清理创建失败的任务 $createdGuid"
+            $remaining = Invoke-MoziGet "MissionGant?SideGuid=$script:sideGuid"
+            Assert-MoziSuccess $remaining '核对失败任务清理结果'
+            $stillPresent = @($remaining.data | Where-Object {
+                [string]$_.id -ieq $createdGuid
+            }).Count -gt 0
+            Assert-Condition (-not $stillPresent) "失败任务 $createdGuid 删除后仍存在"
+        } catch {
+            throw "任务创建失败：$originalError；自动清理未确认：$($_.Exception.Message)"
+        }
+        throw "[NEW_MISSION_CLEANED] $createdGuid；原错误：$originalError"
     }
 }
 

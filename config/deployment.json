@@ -6,7 +6,7 @@
   "auto_instruction": "依据当前蓝方态势，联合指挥 Agent 制定总体方案，空海陆军种 Agent 选择适合的已注册任务 Skill、真实单位、当前目标接触和任务区域；保持有效任务，不重复创建，无目标时不得创建打击任务。",
   "poll_interval_sec": 10,
   "replan_interval_sec": 300,
-  "script_parallelism": 2,
+  "script_parallelism": 4,
   "jammer_support": {
     "enabled": true,
     "trail_km": 20,

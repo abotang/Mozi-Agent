@@ -27,6 +27,38 @@ class AutoRunnerTests(unittest.TestCase):
                     return_value=BytesIO(json.dumps(payload).encode("utf-8"))):
                 self.assertTrue(_mission_exists("http://invalid/api", "existing-mission"))
 
+    def test_explicit_missing_mission_is_not_recovered_from_old_reports(self):
+        payload = {"code": 101, "data": None, "message": "任务不存在"}
+        with patch("runtime.app.daemon.urlopen",
+                   return_value=BytesIO(json.dumps(payload).encode("utf-8"))):
+            self.assertFalse(_mission_exists("http://invalid/api", "old-awacs"))
+
+    def test_absent_historical_awacs_does_not_suppress_opening(self):
+        from rules.awacs_triggers import next_trigger
+        registry = SkillRegistry(ROOT / "skills").load()
+        situation = json.loads((ROOT / "examples/situation.example.json").read_text(encoding="utf-8"))
+        situation["units"]["air"] = [{"guid": "aaaaaaaa-0000-0000-0000-000000000099",
+                                      "name": "E-2D 预警机", "unit_type": "Aircraft",
+                                      "in_facility": True, "airborne": False}]
+        situation["existing_missions"] = []
+        with TemporaryDirectory(dir=ROOT) as folder:
+            reports = Path(folder) / "old-run" / "reports"
+            reports.mkdir(parents=True)
+            (reports / "old.json").write_text(json.dumps({"side": situation["side"],
+                "tasks": [{"key": "airEarlyWarning", "name": "旧预警",
+                           "missionGuid": "bbbbbbbb-0000-0000-0000-000000000099"}]}), encoding="utf-8")
+            runner = AutomaticMissionRunner(collector=lambda: situation, planner=object(),
+                registry=registry, compiler=PlanCompiler(registry, ROOT / "scripts/powershell", folder),
+                executor=object(), state_path=Path(folder) / "state.json")
+            payload = json.dumps({"code": 101, "data": None, "message": "任务不存在"}).encode("utf-8")
+            with patch("runtime.app.daemon.urlopen", side_effect=lambda *a, **k: BytesIO(payload)):
+                runner._reconcile(situation)
+                self.assertEqual(runner.state["missions"], {})
+                runner.state["missions"]["旧预警"] = {"guid": "bbbbbbbb-0000-0000-0000-000000000099"}
+                runner._reconcile(situation)
+                self.assertEqual(runner.state["missions"], {})
+            self.assertEqual(next_trigger(situation, runner.state)["kind"], "opening")
+
     def test_mission_success_response_can_confirm_absence(self):
         for data, expected in ((None, False), ({}, False), ({"guid": "existing"}, True)):
             with self.subTest(data=data), patch(
@@ -117,6 +149,68 @@ class AutoRunnerTests(unittest.TestCase):
         self.assertIn("重复分配", planner.requests[1])
         self.assertEqual(len(executor.created), 2)
         self.assertIn("立即请 Agent 重规划一次", "\n".join(lines))
+
+    def test_cleaned_failed_creation_replans_next_cycle(self):
+        registry = SkillRegistry(ROOT / "skills").load()
+        situation = json.loads((ROOT / "examples/situation.example.json").read_text(encoding="utf-8"))
+        source = json.loads((ROOT / "examples/plan.multiple.example.json").read_text(encoding="utf-8"))
+        call = source["skill_calls"][0]
+        class Planner:
+            count = 0
+            def plan(self, situation, instruction):
+                self.count += 1
+                return {"version": 1, "skill_calls": [call]}
+        class Executor:
+            count = 0
+            def execute(self, invocations, *, dry_run=False):
+                if dry_run:
+                    return []
+                self.count += 1
+                item = invocations[0]
+                if self.count == 1:
+                    result = ExecutionResult(item.call.call_id, item.call.skill_id, "execute",
+                        False, 1, "", "[NEW_MISSION_CLEANED] abc", str(item.config_path),
+                        str(item.report_path))
+                    raise ScriptExecutionError("cleaned", [result])
+                return [ExecutionResult(item.call.call_id, item.call.skill_id, "execute",
+                    True, 0, json.dumps({"tasks": [{"missionGuid":
+                      "11111111-2222-3333-4444-555555555555"}]}), "",
+                    str(item.config_path), str(item.report_path))]
+        planner, executor = Planner(), Executor()
+        with TemporaryDirectory(dir=ROOT) as folder:
+            runner = AutomaticMissionRunner(collector=lambda: json.loads(json.dumps(situation)),
+                planner=planner, registry=registry,
+                compiler=PlanCompiler(registry, ROOT / "scripts/powershell", folder),
+                executor=executor, state_path=Path(folder) / "state.json",
+                sleep=lambda _: None, clock=count(100, 100).__next__, output=lambda _: None)
+            runner.run("test", max_cycles=2)
+            self.assertEqual(runner.state["uncertain"], {})
+        self.assertEqual(planner.count, 2)
+        self.assertEqual(executor.count, 2)
+
+    def test_absent_old_failure_unlocks_only_with_free_units(self):
+        registry = SkillRegistry(ROOT / "skills").load()
+        situation = json.loads((ROOT / "examples/situation.example.json").read_text(encoding="utf-8"))
+        unit = situation["units"]["air"][0]["guid"]
+        with TemporaryDirectory(dir=ROOT) as folder:
+            runner = AutomaticMissionRunner(collector=lambda: situation, planner=object(),
+                registry=registry, compiler=PlanCompiler(registry, ROOT / "scripts/powershell", folder),
+                executor=object(), state_path=Path(folder) / "state.json")
+            runner.state["uncertain"] = {"failed": {"skill_id": "air.air_strike",
+                                                    "unit_guids": [unit]}}
+            (Path(folder) / "cleanup-failed-test.json").write_text(json.dumps({
+                "success": True, "missionDeleted": True,
+                "missionGuid": "bbbbbbbb-0000-0000-0000-000000000099",
+                "responses": {"missionsBefore": {"data": [{
+                    "id": "bbbbbbbb-0000-0000-0000-000000000099",
+                    "name": "failed"}]}}}), encoding="utf-8")
+            with patch("runtime.app.daemon.read_blue_missions", return_value=[]):
+                situation["mission_assignments"] = {unit: "bbbbbbbb-0000-0000-0000-000000000001"}
+                runner._reconcile_uncertain_missions(situation)
+                self.assertIn("failed", runner.state["uncertain"])
+                situation["mission_assignments"] = {}
+                runner._reconcile_uncertain_missions(situation)
+                self.assertNotIn("failed", runner.state["uncertain"])
 
     def test_navy_patrol_is_opening_only_but_later_strike_runs(self):
         registry = SkillRegistry(ROOT / "skills").load()

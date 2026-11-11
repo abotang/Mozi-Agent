@@ -20,6 +20,96 @@ REF = "55555555-5555-5555-5555-555555555555"
 
 
 class AreaCleanupTests(unittest.TestCase):
+    def test_updated_patrol_and_alert_keep_current_alert_without_mission_list(self):
+        mission = "77777777-7777-7777-7777-777777777777"
+        old_alert = "88888888-8888-8888-8888-888888888881"
+        new_alert = "88888888-8888-8888-8888-888888888882"
+        refs = {
+            ORPHAN: ["55555555-5555-5555-5555-555555555551",
+                     "55555555-5555-5555-5555-555555555552",
+                     "55555555-5555-5555-5555-555555555553"],
+            LINKED: ["66666666-6666-6666-6666-666666666661",
+                     "66666666-6666-6666-6666-666666666662",
+                     "66666666-6666-6666-6666-666666666663"],
+            old_alert: ["99999999-9999-9999-9999-999999999991",
+                        "99999999-9999-9999-9999-999999999992",
+                        "99999999-9999-9999-9999-999999999993"],
+            new_alert: ["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2",
+                        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3"],
+        }
+        with TemporaryDirectory(dir=ROOT) as folder:
+            for index, (patrol, alert) in enumerate(
+                    ((ORPHAN, old_alert), (LINKED, new_alert))):
+                report = Path(folder) / f"run-{index}" / "reports" / "task.json"
+                report.parent.mkdir(parents=True)
+                report.write_text(json.dumps({"side": {"guid": SIDE}, "tasks": [{
+                    "missionGuid": mission,
+                    "area": {"guid": patrol, "reused": False,
+                             "reference": {"data": refs[patrol]}},
+                    "alertArea": {"guid": alert, "reused": False,
+                                  "reference": {"data": refs[alert]}}}]}),
+                    encoding="utf-8")
+                os.utime(report, ns=(1_000_000_000 * (index + 1),
+                                     1_000_000_000 * (index + 1)))
+            areas = {
+                guid: {"id": guid,
+                       "missionList": [] if guid == new_alert else [{"id": mission}],
+                       "points": [{"id": value} for value in vertices]}
+                for guid, vertices in refs.items()
+            }
+            posts = []
+
+            def get_json(url):
+                if "/Mission?" in url:
+                    return {"code": 0, "data": {"patrolmissionData": {
+                        "PatrolArea_ID": LINKED, "AlertArea_ID": new_alert,
+                        "PatrolArea": [{"id": x} for x in refs[LINKED]],
+                        "AlertArea": [{"id": x} for x in refs[new_alert]]}}}
+                return {"code": 0, "data": {"sideAreas": [{
+                    "guid": SIDE, "areaTypes": [{"areas": list(areas.values())}]}]}}
+
+            def post_json(url, body):
+                posts.append((url, body))
+                if url.endswith("/ScenArea"):
+                    areas.pop(str(body["area_id"]).strip("{}"))
+                return {"code": 0}
+
+            result = OwnedAreaGarbageCollector(
+                folder, get_json=get_json, post_json=post_json).collect({
+                    "api_base": "http://example/api",
+                    "side": {"guid": SIDE, "name": "蓝方"}})
+            self.assertCountEqual(result["deleted"], [ORPHAN, old_alert])
+            self.assertCountEqual(result["linked"], [LINKED, new_alert])
+            self.assertCountEqual(result["stale_links"], [ORPHAN, old_alert])
+            self.assertIn(new_alert, areas)
+
+    def test_new_per_area_journal_is_discovered(self):
+        with TemporaryDirectory(dir=ROOT) as folder:
+            reports = Path(folder) / "run-1" / "reports"
+            reports.mkdir(parents=True)
+            (reports / f"task.json.area.{ORPHAN}.json").write_text(json.dumps({
+                "created": True, "sideGuid": SIDE, "areaGuid": ORPHAN,
+                "referenceGuids": [REF]}), encoding="utf-8")
+            areas = {ORPHAN: {"id": ORPHAN, "missionList": [],
+                              "points": [{"id": REF}]}}
+
+            def get_json(_url):
+                return {"code": 0, "data": {"sideAreas": [{
+                    "guid": SIDE, "areaTypes": [{"areas": list(areas.values())}]}]}}
+
+            def post_json(url, body):
+                if url.endswith("/ScenArea"):
+                    areas.pop(ORPHAN)
+                return {"code": 0}
+
+            result = OwnedAreaGarbageCollector(
+                folder, get_json=get_json, post_json=post_json).collect({
+                    "api_base": "http://example/api",
+                    "side": {"guid": SIDE, "name": "蓝方"}})
+            self.assertEqual(result["deleted"], [ORPHAN])
+            self.assertEqual(result["owned"], 1)
+
     def test_updated_patrol_deletes_old_area_despite_stale_mission_list(self):
         mission = "77777777-7777-7777-7777-777777777777"
         old_refs = ["55555555-5555-5555-5555-555555555551",

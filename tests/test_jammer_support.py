@@ -82,13 +82,20 @@ class JammerSupportTest(unittest.TestCase):
             controller._script = lambda _sit, _mis, _jam, mode, **kw: calls.append((mode, kw)) or {"success": True}
             state = {"missions": {"strike": {"guid": MISSION, "skill_id": "air.sea_strike"}}}
             controller.tick(situation(), state)
+            self.assertEqual([], calls)  # assignment alone must not launch a jammer
+            striker_launched = situation()
+            striker_launched["units"]["air"][0].update(
+                airborne=True, in_facility=False, lon=142.2)
+            controller.tick(striker_launched, state)
             self.assertEqual(["takeoff"], [mode for mode, _ in calls])
             self.assertEqual(JAMMER, state["jammer_support"][MISSION]["jammer_guid"])
-            controller.tick(situation(), state)
+            controller.tick(striker_launched, state)
             self.assertEqual(1, len(calls))  # no duplicate launch
-            controller.tick(situation(airborne=True), state)
+            both_airborne = situation(airborne=True)
+            both_airborne["units"]["air"][0]["lon"] = 142.4
+            controller.tick(both_airborne, state)
             self.assertEqual("follow", calls[-1][0])
-            self.assertLess(calls[-1][1]["waypoint"]["lon"], 142.2)
+            self.assertLess(calls[-1][1]["waypoint"]["lon"], 142.4)
 
     def test_no_launch_without_target_or_free_jammer(self):
         with TemporaryDirectory(dir=ROOT) as temp:
@@ -120,6 +127,64 @@ class JammerSupportTest(unittest.TestCase):
             occupied[0] = True
             controller.tick(situation(), state)
             self.assertEqual([], calls)
+
+    def test_legacy_solo_jammer_returns_without_follow_or_emissions(self):
+        with TemporaryDirectory(dir=ROOT) as temp:
+            path = Path(temp) / "script.ps1"
+            path.write_text("# mock", encoding="utf-8")
+            def get_json(url):
+                if "/MissionGant?" in url:
+                    return {"code": 0, "data": []}
+                if "/Mission?" in url:
+                    return {"code": 0, "data": mission_detail()}
+                raise AssertionError(url)
+            with patch("runtime.execution.jammer_controller.find_powershell", return_value="pwsh"):
+                controller = JammerEscortController(script_path=path, run_root=Path(temp),
+                                                     get_json=get_json)
+            calls = []
+            controller._script = lambda _sit, _mis, _jam, mode, **kw: calls.append((mode, kw)) or {"success": True}
+            state = {"missions": {"strike": {"guid": MISSION, "skill_id": "air.sea_strike"}},
+                     "jammer_support": {MISSION: {"jammer_guid": JAMMER,
+                                                    "phase": "launch_requested",
+                                                    "created_at_sim": "2026-11-06 08:00:00"}}}
+            live = situation()
+            live["units"]["air"][1].update(airborne=True, in_facility=False)
+            controller.tick(live, state)
+            self.assertEqual([("finish", {"airborne": True})], calls)
+            self.assertEqual("finished", state["jammer_support"][MISSION]["phase"])
+
+    def test_finished_solo_binding_rearms_only_after_striker_launch_and_jammer_return(self):
+        with TemporaryDirectory(dir=ROOT) as temp:
+            path = Path(temp) / "script.ps1"
+            path.write_text("# mock", encoding="utf-8")
+            def get_json(url):
+                if "/MissionGant?" in url:
+                    return {"code": 0, "data": []}
+                if "/Mission?" in url:
+                    return {"code": 0, "data": mission_detail()}
+                if "/unitSensors?" in url:
+                    return {"code": 0, "data": {"sensorList": [
+                        {"type": "雷达"}, {"type": "ECM"}]}}
+                raise AssertionError(url)
+            with patch("runtime.execution.jammer_controller.find_powershell", return_value="pwsh"):
+                controller = JammerEscortController(script_path=path, run_root=Path(temp),
+                                                     get_json=get_json)
+            calls = []
+            controller._script = lambda _sit, _mis, _jam, mode, **kw: calls.append(mode) or {"success": True}
+            state = {"missions": {"strike": {"guid": MISSION, "skill_id": "air.sea_strike"}},
+                     "jammer_support": {MISSION: {"jammer_guid": JAMMER, "phase": "finished"}}}
+            controller.tick(situation(), state)
+            self.assertEqual([], calls)
+            solo = situation()
+            solo["units"]["air"][0].update(airborne=True, in_facility=False)
+            solo["units"]["air"][1].update(airborne=True, in_facility=False)
+            controller.tick(solo, state)
+            self.assertEqual([], calls)  # previous jammer not yet home
+            main_launched = situation()
+            main_launched["units"]["air"][0].update(airborne=True, in_facility=False)
+            controller.tick(main_launched, state)
+            self.assertEqual(["takeoff"], calls)
+            self.assertEqual("launch_requested", state["jammer_support"][MISSION]["phase"])
 
     def test_removed_strike_stops_airborne_jammer(self):
         with TemporaryDirectory(dir=ROOT) as temp:

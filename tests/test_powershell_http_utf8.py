@@ -46,36 +46,71 @@ class PowerShellUtf8Tests(unittest.TestCase):
                     self.respond([f"10000000-0000-0000-0000-{index:012d}"
                                   for index, _ in enumerate(body["Values"], 1)])
                 elif self.path.endswith("/ScenArea"):
-                    self.respond({"id": "20000000-0000-0000-0000-000000000001"})
+                    self.server.area_count = getattr(self.server, "area_count", 0) + 1
+                    self.respond({"id": f"20000000-0000-0000-0000-{self.server.area_count:012d}"})
                 elif body.get("type") == "createMission":
                     self.respond({"id": "30000000-0000-0000-0000-000000000001"})
                 else:
                     if body.get("type") == "PatrolMissionRules":
                         self.server.last_otr = body["Rules"]["OTR"]
                         self.server.last_patrol_rules = body["Rules"]
+                    if body.get("type") == "StrikeMissionRules":
+                        self.server.last_strike_rules = body["Rules"]
+                    if body.get("type") == "AssignUnitToMission":
+                        self.server.last_assigned_units = body["Units"]
+                    if body.get("type") == "UnAssignUnitToMission":
+                        relieved = set(body["Units"])
+                        self.server.last_assigned_units = [
+                            guid for guid in getattr(self.server, "last_assigned_units", [])
+                            if guid not in relieved]
                     if body.get("type") == "SupportMissionRules":
                         self.server.last_support_alt = body["Rules"]["StationAltitude_Aircraft"]
                         self.server.last_support_transit = body["Rules"]["TransitAltitude_Aircraft"]
                         self.server.last_support_emcon = body["Rules"]["AEOOS"]
                         self.server.last_support_one_tanking = body["Rules"]["OneTankingCycleOnly"]
                     if self.path.endswith("/DoctrineInfo"):
-                        self.server.last_mission_emcon = body["Value"]["EMCSetting"]
+                        if "EMCSetting" in body["Value"]:
+                            self.server.last_mission_emcon = body["Value"]["EMCSetting"]
+                        if "General" in body["Value"]:
+                            self.server.last_mission_roe = body["Value"]["General"]["ROE"]["ShootTourists"]
                     self.respond({})
 
             def do_GET(self):
+                self.server.get_paths = getattr(self.server, "get_paths", []) + [self.path]
+                if self.path.startswith("/ApiCtrl/api/unitWeaponInfo?"):
+                    self.respond([{"type": "loadout", "weaponRecord": {
+                        "name": "2x AGM-84L 鱼叉反舰导弹", "curNum": 2}}])
+                    return
                 if self.path.startswith("/ApiCtrl/api/DoctrineInfo?"):
                     self.respond({"EMCSetting": getattr(
                         self.server, "mission_emcon_override",
-                        getattr(self.server, "last_mission_emcon", {}))})
+                        getattr(self.server, "last_mission_emcon", {})),
+                        "General": {"ROE": {"ShootTourists": getattr(
+                            self.server, "last_mission_roe", "0")}}})
                     return
-                self.respond({"patrolmissionData": {
-                    "PatrolArea": [1, 2, 3], "OTR": getattr(self.server, "last_otr", False),
+                patrol = getattr(self.server, "last_patrol_rules", {})
+                strike = getattr(self.server, "last_strike_rules", {})
+                assigned = getattr(self.server, "last_assigned_units", [])
+                self.respond({"missionBasicData": {"assignedCombatUnit": [{
+                    "key": "10000000-0000-0000-0000-000000000999",
+                    "children": [{"key": guid} for guid in assigned]}]},
+                    "patrolmissionData": {
+                    "PatrolArea": [1, 2, 3], "AlertArea": [4, 5, 6],
+                    "AlertArea_ID": patrol.get("AlertArea_ID"),
+                    "IOPA": patrol.get("IOPA", False),
+                    "IWWR": patrol.get("IWWR", False),
+                    "FlightSize": patrol.get("FlightSize"),
+                    "OTR": getattr(self.server, "last_otr", False),
                     "TransitAltitude_Aircraft": getattr(
                         self.server, "last_patrol_rules", {}).get(
                             "TransitAltitude_Aircraft", "未定"),
                     "StationAltitude_Aircraft": getattr(
                         self.server, "last_patrol_rules", {}).get(
                             "StationAltitude_Aircraft", "未定")},
+                    "strikeMissionData": {"targetList": [1],
+                                          "FlightSize": strike.get("FlightSize"),
+                                          "GroupSize": strike.get("GroupSize"),
+                                          "UseGroupSizeHardLimit": strike.get("UseGroupSizeHardLimit")},
                     "supportmissionData": {
                         "area": [1, 2, 3],
                         "StationAltitude_Aircraft": getattr(
@@ -133,12 +168,20 @@ class PowerShellUtf8Tests(unittest.TestCase):
                 results = [result for item in invocation
                            for result in executor.execute_prevalidated(item)]
                 for item in invocation:
-                    self.assertTrue(Path(str(item.report_path) + ".area.json").is_file())
+                    expected_areas = 1 if item.call.skill_id == "air.early_warning" else 2
+                    journals = list(item.report_path.parent.glob(
+                        item.report_path.name + ".area.*.json"))
+                    self.assertEqual(len(journals), expected_areas)
+                    report = json.loads(item.report_path.read_text(encoding="utf-8-sig"))
+                    if expected_areas == 2:
+                        task = report["tasks"][0]
+                        self.assertNotEqual(task["area"]["guid"],
+                                            task["alertArea"]["guid"])
                 situation["units"]["air"].append({
                     "guid": "aaaaaaaa-0000-0000-0000-000000000005",
                     "name": "E-2K预警机-2", "unit_type": "Aircraft", "lat": 20.3, "lon": 130.3})
                 mission_guid = "30000000-0000-0000-0000-000000000001"
-                area_guid = "20000000-0000-0000-0000-000000000001"
+                area_guid = "20000000-0000-0000-0000-000000000005"
                 situation["existing_missions"] = [{
                     "name": "机场近场预警", "guid": mission_guid,
                     "skill_id": "air.early_warning", "unit_guids": awacs_call["unit_guids"],
@@ -185,9 +228,46 @@ class PowerShellUtf8Tests(unittest.TestCase):
                     "EMCON_AccordingSuperior": True, "Radar": "0", "OECM": "0", "Sonar": "0"}
                 with self.assertRaisesRegex(ScriptExecutionError, "电磁管控未回读到"):
                     executor.execute_prevalidated(relief_invocation[0])
+                del server.mission_emcon_override
+                server.last_mission_emcon = {
+                    "EMCON_AccordingSuperior": True, "Radar": "0", "OECM": "0", "Sonar": "0"}
+                strike_call = source_plan["skill_calls"][2]
+                strike_call["unit_guids"] = ["aaaaaaaa-0000-0000-0000-000000000002",
+                                             "aaaaaaaa-0000-0000-0000-000000000003"]
+                strike_calls = validate_plan({"version": 1, "skill_calls": [strike_call]},
+                                             situation, registry)
+                strike_item = PlanCompiler(registry, ROOT / "scripts" / "powershell",
+                                           folder).compile(strike_calls, situation, "doctrine-strike")[0]
+                sea_task = strike_item.config["tasks"]["airSeaStrike"]
+                original_units = list(sea_task["unitGuids"])
+                original_targets = list(sea_task["targetContactGuids"])
+                request_count = len(Handler.requests)
+                for units in ([original_units[0]], [original_units[0], original_units[0].upper()]):
+                    sea_task["unitGuids"] = units
+                    with self.assertRaisesRegex(ScriptExecutionError, "至少分配两架不同飞机"):
+                        executor.execute([strike_item], dry_run=True)
+                sea_task["unitGuids"] = original_units
+                sea_task["targetContactGuids"] = original_targets * 2
+                with self.assertRaisesRegex(ScriptExecutionError, "每个任务只能分配一个海上目标"):
+                    executor.execute([strike_item], dry_run=True)
+                sea_task["targetContactGuids"] = original_targets
+                self.assertEqual(len(Handler.requests), request_count)
+                executor.execute([strike_item], dry_run=True)
+                executor.execute_prevalidated(strike_item)
+                doctrine_posts = [item[2] for item in Handler.requests
+                                  if item[0].endswith("/DoctrineInfo")]
+                self.assertTrue(any(post.get("Value", {}).get("General", {}).get("ROE", {})
+                                    .get("ShootTourists") == "1" for post in doctrine_posts))
+                self.assertTrue(any(post.get("Value", {}).get("EMCSetting", {}).get("Radar") == "1"
+                                    and post["Value"]["EMCSetting"]["EMCON_AccordingSuperior"] is False
+                                    and post["Value"]["EMCSetting"]["OECM"] == "0"
+                                    and post["Value"]["EMCSetting"]["Sonar"] == "0"
+                                    for post in doctrine_posts))
             self.assertTrue(results[-1].success, results[-1].stderr)
             area_posts = [item for item in Handler.requests if item[0].endswith("/ScenArea")]
-            self.assertEqual(len(area_posts), 3)
+            self.assertEqual(len(area_posts), 5)
+            self.assertEqual([item[2]["areaType"] for item in area_posts],
+                             ["405", "106", "413", "106", "407"])
             self.assertEqual(len(area_posts[-1][2]["area_points"]), 14)
             self.assertTrue(all(item[2]["side"] == "蓝方" for item in area_posts))
             self.assertTrue(all("charset=utf-8" in item[1].lower() for item in area_posts))
@@ -198,10 +278,23 @@ class PowerShellUtf8Tests(unittest.TestCase):
             patrol_rules = [item[2]["Rules"] for item in Handler.requests
                             if item[2].get("type") == "PatrolMissionRules"]
             self.assertEqual([rule["OTR"] for rule in patrol_rules], [True, False])
+            self.assertTrue(all(rule["IOPA"] is True for rule in patrol_rules))
+            self.assertTrue(all(rule["IWWR"] is True for rule in patrol_rules))
+            self.assertEqual(patrol_rules[0]["FlightSize"], "1")
+            self.assertTrue(all(rule["PatrolArea_ID"] != rule["AlertArea_ID"]
+                                for rule in patrol_rules))
             self.assertEqual(patrol_rules[0]["TransitAltitude_Aircraft"], "3000")
             self.assertEqual(patrol_rules[0]["StationAltitude_Aircraft"], "10000")
             self.assertNotIn("TransitAltitude_Aircraft", patrol_rules[1])
             self.assertNotIn("StationAltitude_Aircraft", patrol_rules[1])
+            strike_rules = [item[2]["Rules"] for item in Handler.requests
+                            if item[2].get("type") == "StrikeMissionRules"]
+            self.assertEqual(len(strike_rules), 1)
+            self.assertEqual(strike_rules[0]["FlightSize"], "1")
+            self.assertEqual(strike_rules[0]["GroupSize"], "1")
+            self.assertIs(strike_rules[0]["UseGroupSizeHardLimit"], False)
+            self.assertTrue(any(path.startswith("/ApiCtrl/api/unitWeaponInfo?")
+                                for path in server.get_paths))
             support_rules = [item[2]["Rules"] for item in Handler.requests
                              if item[2].get("type") == "SupportMissionRules"]
             self.assertEqual(len(support_rules), 7)
@@ -216,17 +309,19 @@ class PowerShellUtf8Tests(unittest.TestCase):
                                 for rule in support_rules))
             doctrine_posts = [item[2] for item in Handler.requests
                              if item[0].endswith("/DoctrineInfo")]
-            self.assertEqual(len(doctrine_posts), len(support_rules))
-            self.assertTrue(all(body["Guid"] == mission_guid and
-                                body["SubjectType"] == "Mission" and
+            support_doctrine_posts = [body for body in doctrine_posts
+                                      if body.get("Guid") == mission_guid
+                                      and "EMCSetting" in body.get("Value", {})]
+            self.assertGreaterEqual(len(support_doctrine_posts), len(support_rules))
+            self.assertTrue(all(body["SubjectType"] == "Mission" and
                                 body["IsEscort"] is False and
                                 body["Value"]["EMCSetting"] == {
                                     "EMCON_AccordingSuperior": False,
                                     "Radar": "1", "OECM": "0", "Sonar": "0"}
-                                for body in doctrine_posts))
+                                for body in support_doctrine_posts))
             operations = [item[2]["type"] for item in Handler.requests
                           if item[2].get("type") in ("UnAssignUnitToMission", "AssignUnitToMission")]
-            self.assertEqual(operations[-2:], ["UnAssignUnitToMission", "AssignUnitToMission"])
+            self.assertEqual(operations[-3:-1], ["UnAssignUnitToMission", "AssignUnitToMission"])
         finally:
             server.shutdown()
             server.server_close()

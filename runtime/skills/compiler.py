@@ -11,6 +11,7 @@ from typing import Any
 
 from runtime.contracts import MissionInvocation, SkillCall
 from runtime.skills.registry import SkillRegistry
+from rules.patrol_alert_area import patrol_alert_area
 
 
 _SAFE_NAME = re.compile(r"[^0-9A-Za-z._-]+")
@@ -34,6 +35,7 @@ def _empty_task(spec) -> dict[str, Any]:
         "targetKind": spec.target_kind or "Aircraft",
         "loadoutGuid": "",
         "area": None,
+        "alertArea": None,
         "routes": None,
         "parameters": {},
     }
@@ -51,6 +53,26 @@ def _compile_area(call: SkillCall, area_type_id: str) -> dict[str, Any]:
             for point in area.get("points", [])
         ],
     }
+
+
+def _patrol_geometry(call: SkillCall, situation: dict[str, Any]) -> list[dict]:
+    """Resolve reused area vertices from the live situation before script execution."""
+    area = call.area or {}
+    points = area.get("points")
+    if isinstance(points, list) and len(points) >= 3:
+        return points
+    existing_guid = str(area.get("existing_area_guid") or "").strip().strip("{}").lower()
+    if existing_guid:
+        for row in situation.get("existing_areas") or []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("guid") or "").strip().strip("{}").lower() == existing_guid:
+                points = row.get("points")
+                if isinstance(points, list) and len(points) >= 3:
+                    return points
+        raise ValueError(
+            f"{call.mission_name} 巡逻区 {existing_guid} 缺少可回读的几何点，不能创建警戒区")
+    raise ValueError(f"{call.mission_name} 巡逻区缺少几何点，不能创建警戒区")
 
 
 def _compile_route(route: dict[str, Any] | None, default_name: str) -> dict[str, Any] | None:
@@ -98,6 +120,9 @@ class PlanCompiler:
             })
             if spec.requires_area:
                 task["area"] = _compile_area(call, spec.area_type_id or "")
+                if spec.mission_type == "Patrol":
+                    task["alertArea"] = patrol_alert_area(
+                        task["area"], _patrol_geometry(call, situation))
             if call.routes is not None:
                 task["routes"] = {
                     "outbound": _compile_route(call.routes.get("outbound"), f"{call.mission_name}-出航航线"),

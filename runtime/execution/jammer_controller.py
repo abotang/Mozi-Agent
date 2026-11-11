@@ -143,7 +143,7 @@ class JammerEscortController:
         return f"干扰机 {record['jammer_guid']} 结束伴随 {mission_guid}"
 
     def tick(self, situation: dict, state: dict) -> list[str]:
-        """Trigger at strike creation, then update while the package moves."""
+        """Wait for observed main-aircraft takeoff, then escort the moving package."""
         bindings = state.setdefault("jammer_support", {})
         records = {str(row.get("guid")): row for row in state.get("missions", {}).values()
                    if isinstance(row, dict) and is_strike_record(row)}
@@ -187,8 +187,23 @@ class JammerEscortController:
             if record:
                 record.pop("missing_count", None)
             if record and record.get("phase") == "finished":
-                continue
+                # A prior solo sortie may have been recalled before the
+                # striker ever launched. Rearm only after the main aircraft is
+                # actually airborne and the previous jammer is confirmed home.
+                old_jammer_guid = _guid(record.get("jammer_guid"))
+                old_jammer = by_guid.get(old_jammer_guid)
+                if (not package["airborne"] or old_jammer is None
+                        or old_jammer.get("in_facility") is not True
+                        or old_jammer.get("airborne") is True):
+                    continue
+                del bindings[mission_guid]
+                reserved.discard(old_jammer_guid)
+                record = None
             if record is None:
+                # A Mission assignment only reserves a striker. It does not
+                # prove the striker has launched; never send a jammer alone.
+                if not package["airborne"]:
+                    continue
                 if current_sim and end_sim and current_sim >= end_sim:
                     continue
                 candidates = [unit for unit in aircraft if is_jammer(unit)
@@ -221,12 +236,20 @@ class JammerEscortController:
             created_sim = _scenario_time(record.get("created_at_sim"))
             waited_too_long = (created_sim and current_sim and not package["airborne"]
                                and (current_sim - created_sim).total_seconds() >= self.max_wait_sim_sec)
-            if (current_sim and end_sim and current_sim >= end_sim) or waited_too_long:
+            # A legacy binding may have launched its jammer while every main
+            # aircraft remained parked. Return the solo jammer immediately and
+            # never enable its emitters or steering in that state.
+            solo_jammer = (not package["airborne"] and
+                           jammer.get("airborne") is True and
+                           jammer.get("in_facility") is not True)
+            if (current_sim and end_sim and current_sim >= end_sim) or waited_too_long or solo_jammer:
                 try:
                     messages.append(self._finish(situation, mission_guid, record, jammer))
                     record["phase"] = "finished"
                 except Exception as exc:
                     messages.append(f"干扰机结束伴随失败：{exc}")
+                continue
+            if not package["airborne"]:
                 continue
 
             if jammer.get("in_facility") is True:

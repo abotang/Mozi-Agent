@@ -60,7 +60,8 @@ def _unit_ids(assigned: object, mission_guid: str) -> list[str]:
     return result
 
 
-def _detail_unit_ids(base: str, mission_guid: str) -> list[str]:
+def _detail_unit_ids(base: str, mission_guid: str, *,
+                     detail_out: dict | None = None) -> list[str]:
     """Read assigned units from Mission detail when MissionGant omits them.
 
     Missing or malformed detail remains an error: otherwise an assigned
@@ -84,11 +85,40 @@ def _detail_unit_ids(base: str, mission_guid: str) -> list[str]:
         raise RuntimeError(
             f"任务 {mission_guid} 的 assignedCombatUnit 格式未知；不能判定飞机空闲"
         )
-    return _unit_ids(assigned, mission_guid)
+    result = _unit_ids(assigned, mission_guid)
+    if detail_out is not None:
+        detail_out.update(data)
+    return result
+
+
+def _assigned_strike_targets(data: dict, mission_guid: str,
+                             aircraft: set[str], summary_type: object) -> set[str]:
+    """Only a main aircraft assignment covers a target; escorts do not count."""
+    basic = data["missionBasicData"]
+    main_units = set(_unit_ids(basic["assignedCombatUnit"], mission_guid))
+    if not main_units.intersection(aircraft):
+        return set()
+    strike = data.get("strikeMissionData")
+    kind = str(basic.get("type") or summary_type or "").casefold()
+    if kind != "strike" and not isinstance(strike, dict):
+        return set()
+    if not isinstance(strike, dict) or "targetList" not in strike:
+        raise RuntimeError(f"任务 {mission_guid} 缺少打击目标列表；不能确认目标覆盖")
+    targets = strike["targetList"]
+    if targets is None:
+        return set()
+    if not isinstance(targets, list):
+        raise RuntimeError(f"任务 {mission_guid} 的 targetList 格式未知；不能确认目标覆盖")
+    result = set()
+    for row in targets:
+        result.add(_first_guid(row, _UNIT_ID_FIELDS, "打击目标 GUID")
+                   if isinstance(row, dict) else _guid(row, "打击目标 GUID"))
+    return result
 
 
 def read_blue_mission_assignments(
-    api_base: str, side_guid: str, aircraft_guids: set[str]
+    api_base: str, side_guid: str, aircraft_guids: set[str], *,
+    active_strike_target_guids: set[str] | None = None
 ) -> dict[str, str]:
     """Return ``{aircraft_guid: mission_guid}`` for assigned blue aircraft.
 
@@ -96,9 +126,15 @@ def read_blue_mission_assignments(
     or a list of mission rows. Each row must identify its mission. When a row
     omits ``assignUnit``, its ``Mission`` detail must expose
     ``missionBasicData.assignedCombatUnit``. Flat and grouped units are accepted.
+    Optional ``active_strike_target_guids`` receives live targets of strike tasks
+    with main aircraft assigned. Existing detail reads are reused. A summary
+    that already lists aircraft only needs an extra detail read for a possible
+    strike task. The sink is replaced only after the entire read succeeds.
     """
     aircraft = {_guid(value, "飞机 GUID") for value in aircraft_guids}
     if not aircraft:
+        if active_strike_target_guids is not None:
+            active_strike_target_guids.clear()
         return {}
     side = _guid(side_guid, "蓝方 GUID")
     base = str(api_base).rstrip("/")
@@ -116,16 +152,30 @@ def read_blue_mission_assignments(
         raise RuntimeError("蓝方任务分配缺少 data；不能判定飞机空闲")
     rows = payload.get("data")
     if rows is None:
+        if active_strike_target_guids is not None:
+            active_strike_target_guids.clear()
         return {}
     if not isinstance(rows, list):
         raise RuntimeError("蓝方任务分配 data 格式未知；不能判定飞机空闲")
     occupied: dict[str, str] = {}
+    covered_targets: set[str] = set()
     for row in rows:
         if not isinstance(row, dict):
             raise RuntimeError("蓝方任务分配包含非对象任务")
         mission_guid = _first_guid(row, _MISSION_ID_FIELDS, "任务 GUID")
+        detail: dict = {}
         unit_guids = (_unit_ids(row["assignUnit"], mission_guid)
-                      if "assignUnit" in row else _detail_unit_ids(base, mission_guid))
+                      if "assignUnit" in row else
+                      _detail_unit_ids(base, mission_guid, detail_out=detail))
+        if active_strike_target_guids is not None:
+            known_non_strike = {"patrol", "support", "ferry", "mining",
+                                "mineclearing", "cargo", "escort"}
+            if (not detail and set(unit_guids).intersection(aircraft)
+                    and str(row.get("type") or "").casefold() not in known_non_strike):
+                _detail_unit_ids(base, mission_guid, detail_out=detail)
+            if detail:
+                covered_targets.update(_assigned_strike_targets(
+                    detail, mission_guid, aircraft, row.get("type")))
         for unit_guid in unit_guids:
             if unit_guid not in aircraft:
                 continue
@@ -133,4 +183,7 @@ def read_blue_mission_assignments(
             if previous is not None and previous != mission_guid:
                 raise RuntimeError(f"飞机 {unit_guid} 同时出现在任务 {previous} 和 {mission_guid}")
             occupied[unit_guid] = mission_guid
+    if active_strike_target_guids is not None:
+        active_strike_target_guids.clear()
+        active_strike_target_guids.update(covered_targets)
     return occupied

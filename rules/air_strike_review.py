@@ -13,6 +13,7 @@ from uuid import UUID
 
 from rules.awacs_area import is_awacs
 from rules.jammer_support import is_jammer
+from rules.air_weapon_roles import compatible_with_skill
 
 
 RADIUS_KM = 1000.0
@@ -62,7 +63,8 @@ def strike_opportunities(situation: dict, air_skills: list[dict],
     result = {"radius_km": RADIUS_KM,
               "eligible_by_skill": {skill: [] for skill in SKILL_CONTACT_GROUP}}
     occupied = {_guid(guid) for guid in (situation.get("mission_assignments") or {})}
-    free_positions = []
+    free_positions = {skill: [] for skill in SKILL_CONTACT_GROUP}
+    live_inventory = bool(situation.get("weapon_inventory_live"))
     for unit in air_units:
         if not isinstance(unit, dict):
             continue
@@ -73,8 +75,10 @@ def strike_opportunities(situation: dict, air_skills: list[dict],
             continue
         point = _point(unit)
         if point is not None:
-            free_positions.append(point)
-    if not free_positions:
+            for skill in SKILL_CONTACT_GROUP:
+                if compatible_with_skill(unit, skill, live=live_inventory):
+                    free_positions[skill].append(point)
+    if not any(free_positions.values()):
         return result
 
     registered = {str(skill.get("skill_id")) for skill in air_skills
@@ -83,7 +87,7 @@ def strike_opportunities(situation: dict, air_skills: list[dict],
     if not isinstance(contacts, dict):
         return result
     for skill, group in SKILL_CONTACT_GROUP.items():
-        if skill not in registered:
+        if skill not in registered or not free_positions[skill]:
             continue
         seen = set()
         for contact in contacts.get(group, []):
@@ -96,7 +100,7 @@ def strike_opportunities(situation: dict, air_skills: list[dict],
             if point is None:
                 continue
             seen.add(guid)
-            nearest = min(_distance_km(unit, point) for unit in free_positions)
+            nearest = min(_distance_km(unit, point) for unit in free_positions[skill])
             if nearest <= RADIUS_KM:
                 result["eligible_by_skill"][skill].append({
                     "contact_guid": guid,
