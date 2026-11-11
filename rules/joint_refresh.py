@@ -50,6 +50,8 @@ def refresh_reason(cache: dict | None, snapshot: dict, instruction: str,
         return "想定或推演方变化"
     if previous.get("scenario_end") != snapshot.get("scenario_end"):
         return "想定结束时间变化"
+    if previous.get("campaign_phase") != snapshot.get("campaign_phase"):
+        return "侦控制空阶段或执行态势变化"
     if previous.get("time_priority") != snapshot.get("time_priority"):
         return "推演时间进入新的筹划阶段"
     if previous.get("forces") != snapshot.get("forces"):

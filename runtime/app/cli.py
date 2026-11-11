@@ -50,6 +50,8 @@ def _deployment(path: str) -> dict:
     for key in ("mozi_host", "mozi_ws_port", "mozi_api_base", "llm_config"):
         if not data.get(key):
             raise ValueError(f"部署配置缺少 {key}")
+    if type(data.get("phase_control_enabled", True)) is not bool:
+        raise ValueError("phase_control_enabled 必须是布尔值")
     parallelism = data.get("script_parallelism", 2)
     if type(parallelism) is not int or not 1 <= parallelism <= 4:
         raise ValueError("script_parallelism 必须是 1 到 4 的整数")
@@ -196,6 +198,7 @@ def _auto_run(registry: SkillRegistry, deployment_path: str,
         poll_interval_sec=float(deployment.get("poll_interval_sec", 10)),
         replan_interval_sec=float(deployment.get("replan_interval_sec", 300)),
         script_parallelism=deployment.get("script_parallelism", 2),
+        phase_control_enabled=deployment.get("phase_control_enabled", True),
         jammer_controller=jammer_controller,
         opening_doctrine=lambda situation: set_opening_engagement(
             situation, ROOT / "scripts" / "powershell" / "10-开局蓝方接战规则.ps1",

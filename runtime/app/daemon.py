@@ -27,6 +27,7 @@ from rules.situation_memory import (memory_brief, record_dispatch_outcome,
 from rules.situation_refresh import contact_snapshot, tactical_refresh_reason
 from rules.side_doctrine import opening_engagement_needed
 from rules.scenario_timeline import scenario_timeline
+from rules.campaign_phase import phase_context
 
 
 def _signature(situation: dict) -> str:
@@ -46,6 +47,12 @@ def _signature(situation: dict) -> str:
             for area in situation.get("existing_areas", [])
         ),
         "scenario_time_slot": scenario_timeline(situation.get("scenario"))["planning_slot"],
+        # Phase observations include real sortie changes; a grounded-to-airborne
+        # transition must wake planning even within the same simulation slot.
+        "campaign_phase_observation": (
+            (situation.get("operational_rules") or {}).get("campaign_phase", {}).get("observation")
+            if (situation.get("operational_rules") or {}).get("campaign_phase", {}).get("enabled")
+            else None),
     }
     return json.dumps(values, sort_keys=True, ensure_ascii=False)
 
@@ -90,7 +97,7 @@ class AutomaticMissionRunner:
     def __init__(self, *, collector, planner, registry, compiler: PlanCompiler,
                  executor: PowerShellMissionExecutor, state_path: Path,
                  poll_interval_sec: float = 10, replan_interval_sec: float = 300,
-                 script_parallelism: int = 2,
+                 script_parallelism: int = 2, phase_control_enabled: bool = False,
                  sleep=time.sleep, clock=time.monotonic, output=print,
                  area_cleaner: OwnedAreaGarbageCollector | None = None,
                  jammer_controller: JammerEscortController | None = None,
@@ -106,6 +113,9 @@ class AutomaticMissionRunner:
         if type(script_parallelism) is not int or not 1 <= script_parallelism <= 4:
             raise ValueError("script_parallelism 必须是 1 到 4 的整数")
         self.script_parallelism = script_parallelism
+        if type(phase_control_enabled) is not bool:
+            raise ValueError("phase_control_enabled 必须是布尔值")
+        self.phase_control_enabled = phase_control_enabled
         self.sleep = sleep
         self.clock = clock
         self.output = output
@@ -301,13 +311,14 @@ class AutomaticMissionRunner:
                 rewound = scenario_rewound(self.state.get("situation_memory"), situation)
                 if rewound:
                     self.state["jammer_support"] = {}
+                    self.state["campaign_phase"] = {}
                     reset_directive = getattr(self.planner, "reset_cached_directive", None)
                     if callable(reset_directive):
                         reset_directive()
                     last_signature = None
                     last_planned_contacts = None
                     last_planned_at = -float("inf")
-                    self.output(f"[第 {cycles} 轮] 想定时间倒退：清空上一局态势记忆与联合方案缓存")
+                    self.output(f"[第 {cycles} 轮] 想定时间倒退：清空上一局态势记忆、作战阶段与联合方案缓存")
                 if (self.opening_doctrine is not None
                         and opening_engagement_needed(self.state, rewound=rewound)):
                     stage = "设置蓝方开局接战条令"
@@ -338,6 +349,9 @@ class AutomaticMissionRunner:
                     "awacs_min_separation_km": minimum_separation_km(situation),
                     "awacs_trigger": awacs_trigger,
                     "scenario_time": scenario_timeline(situation.get("scenario")),
+                    "campaign_phase": phase_context(
+                        self.state.get("campaign_phase", {}), situation,
+                        enabled=self.phase_control_enabled),
                 }
                 signature = _signature(situation)
                 current_contacts = contact_snapshot(situation)
@@ -415,6 +429,15 @@ class AutomaticMissionRunner:
                             raise
                         conflict_message = str(exc)
                         self.output(f"[第 {cycles} 轮] {conflict_message}；立即请 Agent 重规划一次")
+                # Save an evaluated phase even when there are no task calls.
+                # A later round/restart must not lose the commander's decision.
+                phase_result = plan.get("campaign_phase")
+                if isinstance(phase_result, dict):
+                    self.state["campaign_phase"] = phase_result
+                    self._save_state()
+                    permitted = "允许" if phase_result.get("sea_strike_allowed") is True else "暂缓"
+                    self.output(f"[第 {cycles} 轮] 作战阶段：{phase_result.get('phase', '未知')}；"
+                                f"对海打击：{permitted}；{phase_result.get('reason', '')}")
                 # Only a validated proposal consumes this planning snapshot.
                 # Model/parameter failures retry on the next poll; execution
                 # failures retain this checkpoint and their uncertainty locks.

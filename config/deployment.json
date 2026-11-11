@@ -13,5 +13,6 @@
     "follow_interval_sec": 30,
     "launch_retry_sec": 30,
     "max_wait_sim_sec": 1800
-  }
+  },
+  "phase_control_enabled": true
 }

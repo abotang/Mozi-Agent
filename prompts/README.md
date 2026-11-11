@@ -18,3 +18,5 @@
 空军与预警机 Agent 还会收到 `existing_areas` 和 `operational_rules.patrol_spacing`。前者是墨子当前任务实际关联的航空巡逻/预警区，后者给出边界净距阈值、预警区相对战斗巡逻区的前后方判定与现有冲突。Agent 可据此调整原巡逻任务区域；最终仍由规则代码阻断重叠、间距不足或预警区前置的区域。
 
 空军、海军、陆军三份提示词各最多 2000 字符，由加载器检查。这个数只约束静态提示词文件；每轮附加的态势 JSON 另计。`component_max_tokens` 现为 8192，是各专业 Agent 的输出上限；完整方案仍须通过 JSON 解析和规则校验才会进入任务脚本。
+
+联合指挥每次评估输出 `operation_phase` 和 `air_control_assessment`（status/evidence），引用当轮空中行动与威胁证据。`operational_rules.campaign_phase` 给出规则维护的阶段、观测和 `sea_strike_allowed`；阶段按侦察、制空、对海逐次推进。时间优先级与1000公里距离条件均不能代替对海阶段许可；空军只有在规则允许且目录提供该 Skill 时才能调用对海打击。对空打击仍可用于侦察/制空阶段争夺空域。

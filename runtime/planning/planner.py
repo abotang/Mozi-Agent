@@ -29,6 +29,7 @@ from rules.jammer_support import is_jammer
 from rules.air_strike_review import strike_opportunities, review_focus
 from rules.air_allocation import fighter_allocation
 from rules.sea_strike_allocation import allocation, apply_allocation
+from rules.campaign_phase import evaluate_phase, observation, suppress_sea_calls
 from rules.agent_context import service_rules, service_missions
 from rules.plan_review import merge_review_calls
 
@@ -148,6 +149,10 @@ class HierarchicalSkillPlanner:
         # change the top-level commander's objective or invalidate its cache.
         joint_instruction = instruction.split("\n上一版任务方案校验失败：", 1)[0]
         snapshot = strategic_snapshot(situation)
+        phase_input = deepcopy(rules.get("campaign_phase") or {})
+        if phase_input.get("enabled"):
+            snapshot["campaign_phase"] = {"phase": phase_input.get("phase"),
+                                          "observation": observation(situation)}
         now = self.clock()
         refresh = refresh_reason(self._joint_cache, snapshot, joint_instruction,
                                  now, self.config.joint_interval_sec)
@@ -175,6 +180,17 @@ class HierarchicalSkillPlanner:
             if callable(trace):
                 trace("joint", "cache", reason="联合方案尚在复用期且无关键态势变化",
                       output=deepcopy(directive))
+
+        phase_result = evaluate_phase(phase_input, directive, situation)
+        if phase_result["enabled"]:
+            rules["campaign_phase"] = deepcopy(phase_result)
+            if not phase_result["sea_strike_allowed"]:
+                catalogs["air"] = [s for s in catalogs["air"] if s["skill_id"] != "air.sea_strike"]
+                rules["air_strike_opportunities"]["eligible_by_skill"]["air.sea_strike"] = []
+                rules["sea_strike_allocation"].update(groups=[], phase_blocked=True,
+                                                     reason=phase_result["reason"])
+                skips["air"] = skip_reason("air", own_unit_rows["air"], catalogs["air"],
+                                           situation["contacts"], rules)
 
         def decide(owner: str) -> dict[str, Any]:
             if skips[owner]:
@@ -291,6 +307,20 @@ class HierarchicalSkillPlanner:
                                 thread_name_prefix="skill-planner") as pool:
             proposals = dict(zip(AGENT_OWNERS, pool.map(decide, AGENT_OWNERS)))
         for owner, proposal in proposals.items():
+            # Even if a model ignores its filtered catalog, do not execute a
+            # sea strike before the joint assessment releases this phase.
+            if owner == "air":
+                kept, suppressed = suppress_sea_calls(proposal["skill_calls"], phase_result)
+                if suppressed:
+                    proposal["skill_calls"] = kept
+                    proposal["phase_suppressed_calls"] = suppressed
+                    proposal["summary"] = (str(proposal.get("summary") or "") +
+                        f"；阶段规则暂缓{len(suppressed)}项航空对海任务：" + phase_result["reason"])
+                    trace = getattr(self.client, "trace_event", None)
+                    if callable(trace):
+                        trace("component_air", "phase_gate", reason=phase_result["reason"],
+                              output={"suppressed_calls": deepcopy(suppressed),
+                                      "phase": deepcopy(phase_result)})
             own_ids = {
                 str(item.get("guid", item.get("id", ""))).strip().strip("{}").lower()
                 for item in own_unit_rows[owner] if isinstance(item, dict)
@@ -337,6 +367,7 @@ class HierarchicalSkillPlanner:
                 for owner in AGENT_OWNERS if str(proposals[owner].get("summary", "")).strip()
             ),
             "joint_directive": directive,
+            "campaign_phase": phase_result,
             "joint_source": "model" if refresh else "cache",
             "joint_refresh_reason": refresh,
             "agent_skips": {owner: reason for owner, reason in skips.items() if reason},

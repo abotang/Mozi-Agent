@@ -13,12 +13,88 @@ sys.path.insert(0, str(ROOT))
 
 from runtime.skills.compiler import PlanCompiler
 from runtime.contracts import ExecutionResult
-from runtime.app.daemon import AutomaticMissionRunner, _mission_exists
+from runtime.app.daemon import AutomaticMissionRunner, _mission_exists, _signature
 from runtime.execution.executor import ScriptExecutionError
 from runtime.skills.registry import SkillRegistry
 
 
 class AutoRunnerTests(unittest.TestCase):
+    def test_phase_persists_without_calls_and_survives_runner_restart(self):
+        registry = SkillRegistry(ROOT / "skills").load()
+        situation = json.loads((ROOT / "examples/situation.example.json").read_text(encoding="utf-8"))
+        phase = {"enabled": True, "phase": "air_control", "sea_strike_allowed": False,
+                 "reason": "尚未完成空域控制", "evidence": [], "evaluated_at": "2026-06-05 08:00:00"}
+
+        class Planner:
+            def plan(self, *_):
+                return {"version": 1, "summary": "继续控制", "skill_calls": [],
+                        "campaign_phase": phase}
+
+        output = []
+        with TemporaryDirectory(dir=ROOT) as folder:
+            state_path = Path(folder) / "state.json"
+            kwargs = dict(collector=lambda: json.loads(json.dumps(situation)),
+                planner=Planner(), registry=registry,
+                compiler=PlanCompiler(registry, ROOT / "scripts/powershell", folder),
+                executor=object(), state_path=state_path, phase_control_enabled=True,
+                sleep=lambda _: None, output=output.append)
+            with patch("runtime.app.daemon.phase_context", return_value={
+                    "enabled": True, "observation": {"airborne": 0}}) as context:
+                AutomaticMissionRunner(**kwargs).run("阶段测试", max_cycles=1)
+            context.assert_called_once()
+            self.assertIs(context.call_args.kwargs["enabled"], True)
+            stored = json.loads(state_path.read_text(encoding="utf-8"))
+            recovered = AutomaticMissionRunner(**kwargs)
+        self.assertEqual(stored["campaign_phase"], phase)
+        self.assertEqual(recovered.state["campaign_phase"], phase)
+        self.assertIn("对海打击：暂缓", "\n".join(output))
+
+    def test_phase_observation_wakes_same_slot_but_disabled_rule_does_not(self):
+        situation = json.loads((ROOT / "examples/situation.example.json").read_text(encoding="utf-8"))
+        situation["operational_rules"] = {"campaign_phase": {
+            "enabled": True, "observation": {"airborne_fighters": []}}}
+        grounded = _signature(situation)
+        situation["operational_rules"]["campaign_phase"]["observation"]["airborne_fighters"] = ["fighter"]
+        self.assertNotEqual(_signature(situation), grounded)
+        situation["operational_rules"]["campaign_phase"]["enabled"] = False
+        disabled = _signature(situation)
+        situation["operational_rules"]["campaign_phase"]["observation"]["airborne_fighters"] = []
+        self.assertEqual(_signature(situation), disabled)
+
+    def test_phase_context_resets_after_time_rewind_and_new_scenario(self):
+        registry = SkillRegistry(ROOT / "skills").load()
+        template = json.loads((ROOT / "examples/situation.example.json").read_text(encoding="utf-8"))
+        template["scenario"]["initial_time"] = "2026-06-05 08:00:00"
+        frames = []
+        for current in ("2026-06-05 08:05:00", "2026-06-05 08:00:00"):
+            item = json.loads(json.dumps(template))
+            item["scenario"]["start_time"] = current
+            frames.append(item)
+        observed_previous = []
+
+        def context(previous, situation, *, enabled):
+            observed_previous.append(dict(previous))
+            return {"enabled": enabled, "observation": {}}
+
+        class Planner:
+            def plan(self, *_):
+                return {"version": 1, "summary": "阶段测试", "skill_calls": [],
+                        "campaign_phase": {"enabled": True, "phase": "air_control",
+                                           "sea_strike_allowed": False, "reason": "测试"}}
+
+        with TemporaryDirectory(dir=ROOT) as folder:
+            runner = AutomaticMissionRunner(collector=lambda: frames.pop(0), planner=Planner(),
+                registry=registry, compiler=PlanCompiler(registry, ROOT / "scripts/powershell", folder),
+                executor=object(), state_path=Path(folder) / "state.json", phase_control_enabled=True,
+                sleep=lambda _: None, clock=lambda: 0, output=lambda _: None)
+            with patch("runtime.app.daemon.phase_context", side_effect=context):
+                runner.run("阶段测试", max_cycles=2)
+            self.assertEqual(observed_previous, [{}, {}])
+            self.assertEqual(runner.state["campaign_phase"]["phase"], "air_control")
+            template["scenario"]["name"] = "another scenario"
+            runner._reconcile(template)
+            self.assertNotIn("campaign_phase", runner.state)
+
     def test_mission_business_error_preserves_deduplication(self):
         for payload in ({"code": 101, "data": None, "message": "接口暂时不可用"},
                         {"data": None}, {"code": 0}, []):

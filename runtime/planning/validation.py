@@ -17,6 +17,7 @@ from rules.jammer_support import is_jammer
 from rules.air_weapon_roles import compatible_with_skill, role_for_skill
 from rules.patrol_spacing import validate_patrol_spacing
 from rules.sea_strike_allocation import validate_groups
+from rules.campaign_phase import validate_phase_calls
 
 
 _GUID = re.compile(r"^\{?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}?$")
@@ -302,5 +303,6 @@ def validate_plan(plan: dict[str, Any], situation: dict[str, Any], registry: Ski
     validate_patrol_spacing(calls, situation.get("existing_areas", []),
                             situation=situation)
     validate_aircraft_availability(calls, situation)
+    validate_phase_calls(calls, plan, situation)
     validate_groups(calls, situation)
     return calls
