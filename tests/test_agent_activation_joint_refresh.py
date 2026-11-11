@@ -126,6 +126,74 @@ class AgentActivationAndJointRefreshTests(unittest.TestCase):
         self.assertEqual(self.client.service_contexts["component_air"]["operational_rules"]
                          ["suspected_air_attack_axis"], axis)
 
+    def test_air_strike_priority_rechecks_patrol_only_answer_once(self):
+        class StrikeReviewClient(RecordingClient):
+            def __init__(self):
+                super().__init__()
+                self.air_contexts = []
+
+            def plan(self, role, system, context):
+                if role != "component_air":
+                    return super().plan(role, system, context)
+                self.roles.append(role)
+                self.air_contexts.append(context)
+                if len(self.air_contexts) == 1:
+                    return {"version": 1, "service": "air", "summary": "目标太远，继续巡逻",
+                            "skill_calls": []}
+                return {"version": 1, "service": "air", "summary": "对当前敌机出动",
+                        "skill_calls": [{"call_id": "counter-air-1",
+                                         "skill_id": "air.air_strike",
+                                         "mission_name": "当前空中接触打击",
+                                         "unit_guids": ["aaaaaaaa-0000-0000-0000-000000000001"],
+                                         "target_contact_guids": [
+                                             "dddddddd-0000-0000-0000-000000000001"]}]}
+
+        self.situation["scenario"].update(
+            start_time="2026-11-06 11:50:00",
+            end_time="2026-11-06 13:20:00")
+        self.client = StrikeReviewClient()
+        self.planner = HierarchicalSkillPlanner(
+            AgentConfig(base_url="http://127.0.0.1:1/v1", model="fake",
+                        objective="test", joint_interval_sec=900,
+                        component_parallelism=4),
+            self.registry, client=self.client, clock=lambda: self.now)
+        plan = self.plan()
+        self.assertEqual(self.client.roles.count("joint"), 1)
+        self.assertEqual(len(self.client.air_contexts), 2)
+        self.assertEqual(plan["service_proposals"]["air"]["air_strike_review"], {
+            "triggered": True, "focus_skill_id": "air.air_strike",
+            "strike_submitted": True})
+        self.assertEqual(plan["skill_calls"][0]["skill_id"], "air.air_strike")
+        self.assertEqual(self.client.air_contexts[1]["planning_feedback"]["rule"],
+                         "air_strike_1000km_review")
+        self.assertTrue(self.client.joint_contexts[0]["situation"]
+                        ["operational_rules"]["air_strike_opportunities"]
+                        ["eligible_by_skill"]["air.air_strike"])
+
+    def test_time_budget_reaches_agents_and_phase_change_refreshes_joint(self):
+        self.situation["scenario"].update(
+            start_time="2026-11-06 10:40:00",
+            end_time="2026-11-06 13:20:00",
+        )
+        self.plan()
+        first_budget = (self.client.joint_contexts[-1]["situation"]
+                        ["operational_rules"]["scenario_time"])
+        self.assertEqual(first_budget["total_minutes"], 200.0)
+        self.assertEqual(first_budget["remaining_minutes"], 160.0)
+        self.assertEqual(first_budget["planning_priority"], "侦察部署")
+        self.assertEqual(self.client.service_contexts["component_air"]
+                         ["operational_rules"]["scenario_time"], first_budget)
+        self.assertEqual(self.client.service_contexts["component_navy"]
+                         ["operational_rules"]["scenario_time"], first_budget)
+
+        self.now = 101  # Real-time 900-second cache has not expired.
+        self.situation["scenario"]["start_time"] = "2026-11-06 11:45:00"
+        changed = self.plan()
+        self.assertEqual(changed["joint_source"], "model")
+        self.assertEqual(changed["joint_refresh_reason"], "推演时间进入新的筹划阶段")
+        self.assertEqual(self.client.joint_contexts[-1]["situation"]["operational_rules"]
+                         ["scenario_time"]["planning_priority"], "打击优先")
+
 
 if __name__ == "__main__":
     unittest.main()

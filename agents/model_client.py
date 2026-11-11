@@ -245,7 +245,8 @@ class ChatCompletionClient:
     @staticmethod
     def _cache_ordered_context(context):
         """固定资料在前、动态态势在后，使公共前缀更长且序列化稳定。"""
-        static_keys = ("objective", "profiles", "task_catalog", "validation_constraints", "allocation_policy")
+        static_keys = ("objective", "task_skills", "available_task_skills",
+                       "profiles", "task_catalog", "validation_constraints", "allocation_policy")
         ordered = {key: context[key] for key in static_keys if key in context}
         ordered.update({key: value for key, value in context.items() if key not in ordered})
         return ordered

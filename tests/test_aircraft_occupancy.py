@@ -97,6 +97,12 @@ class AircraftOccupancyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "飞机已被任务占用"):
             validate_plan(plan, self.situation, self.registry)
         plan["skill_calls"][0]["existing_mission_guid"] = OLD_MISSION
+        self.situation["existing_areas"] = [{
+            "guid": "22222222-3333-4444-8555-666666666666",
+            "name": "原战斗巡逻区", "type_id": "405",
+            "points": deepcopy(self.call["area"]["points"]),
+            "mission_guids": [OLD_MISSION],
+        }]
         self.assertEqual(1, len(validate_plan(plan, self.situation, self.registry)))
 
     def test_occupied_escort_rejected(self):

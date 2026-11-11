@@ -26,10 +26,11 @@ from rules.situation_memory import (memory_brief, record_dispatch_outcome,
                                     record_plan, scenario_rewound, update_memory)
 from rules.situation_refresh import contact_snapshot, tactical_refresh_reason
 from rules.side_doctrine import opening_engagement_needed
+from rules.scenario_timeline import scenario_timeline
 
 
 def _signature(situation: dict) -> str:
-    """单位与接触变化立即重评；静态态势由定时间隔兜底。"""
+    """Unit/contact changes and stable simulation-time slots wake planning."""
     values = {
         "side": situation["side"]["guid"],
         "units": {kind: sorted(str(item["guid"]) for item in rows)
@@ -37,6 +38,14 @@ def _signature(situation: dict) -> str:
         "contacts": {kind: sorted(str(item["guid"]) for item in rows)
                      for kind, rows in situation["contacts"].items()},
         "occupied_aircraft": sorted((situation.get("mission_assignments") or {}).items()),
+        "air_patrol_areas": sorted(
+            (str(area.get("guid", "")),
+             tuple(sorted(str(guid) for guid in area.get("mission_guids", []))),
+             tuple((round(float(point["lat"]), 5), round(float(point["lon"]), 5))
+                   for point in area.get("points", [])))
+            for area in situation.get("existing_areas", [])
+        ),
+        "scenario_time_slot": scenario_timeline(situation.get("scenario"))["planning_slot"],
     }
     return json.dumps(values, sort_keys=True, ensure_ascii=False)
 
@@ -46,7 +55,11 @@ def _mission_exists(api_base: str, mission_guid: str) -> bool:
         with urlopen(f"{api_base.rstrip('/')}/Mission?Guid={quote(mission_guid)}",
                      timeout=5) as response:
             data = json.load(response)
-        return data.get("code") == 0 and bool(data.get("data"))
+        # A failed business response cannot prove the task was deleted.
+        # Preserve deduplication until a successful query confirms absence.
+        if not isinstance(data, dict) or data.get("code") != 0 or "data" not in data:
+            return True
+        return bool(data.get("data"))
     except Exception:
         # 无法确认时维持去重，避免 API 暂时故障导致重复创建。
         return True
@@ -276,6 +289,7 @@ class AutomaticMissionRunner:
                     "navy_patrol_opening_allowed": navy_patrol_allowed,
                     "awacs_min_separation_km": minimum_separation_km(situation),
                     "awacs_trigger": awacs_trigger,
+                    "scenario_time": scenario_timeline(situation.get("scenario")),
                 }
                 signature = _signature(situation)
                 current_contacts = contact_snapshot(situation)
@@ -286,15 +300,18 @@ class AutomaticMissionRunner:
                          and awacs_trigger["kind"] == "hold" and not tactical_reason):
                     self.sleep(self.poll_interval_sec)
                     continue
-                last_signature = signature
-                last_planned_at = started
-                last_planned_contacts = current_contacts
                 if tactical_reason:
                     self.output(f"[第 {cycles} 轮] 态势变化触发重评：{tactical_reason}")
                 self.output(f"[第 {cycles} 轮] 蓝方态势：飞机 {len(situation['units']['air'])}，"
                             f"海军 {len(situation['units']['navy'])}，"
                             f"潜艇 {len(situation['units'].get('submarine', []))}（暂未接入），"
                             f"接触 {sum(len(rows) for rows in situation['contacts'].values())}")
+                timeline = situation["operational_rules"]["scenario_time"]
+                if timeline["total_minutes"] is not None:
+                    self.output(f"[第 {cycles} 轮] 推演时间：总 {timeline['total_minutes']} 分钟，"
+                                f"已过 {timeline['elapsed_minutes']} 分钟，"
+                                f"剩余 {timeline['remaining_minutes']} 分钟；"
+                                f"当前优先：{timeline['planning_priority']}")
                 for attempt in range(2):
                     stage = "联合指挥与军种 Agent 规划"
                     set_monitor_context = getattr(self.planner, "set_monitor_context", None)
@@ -344,11 +361,18 @@ class AutomaticMissionRunner:
                                       "空中预警 area", "空中预警进攻轴向",
                                       "area.attack_bearing_deg", "area.forward_km",
                                       "第二架预警机", "预警机间距不足", "预警任务最多",
-                                      "预警机已在现有预警任务")
+                                      "预警机已在现有预警任务", "巡逻区间距不足",
+                                      "预警区位置过前")
                         if attempt or not any(word in str(exc) for word in repairable):
                             raise
                         conflict_message = str(exc)
                         self.output(f"[第 {cycles} 轮] {conflict_message}；立即请 Agent 重规划一次")
+                # Only a validated proposal consumes this planning snapshot.
+                # Model/parameter failures retry on the next poll; execution
+                # failures retain this checkpoint and their uncertainty locks.
+                last_signature = signature
+                last_planned_at = started
+                last_planned_contacts = current_contacts
                 record_plan(memory, plan, situation["scenario"]["start_time"])
                 self._save_state()
                 if navy_patrol_allowed:

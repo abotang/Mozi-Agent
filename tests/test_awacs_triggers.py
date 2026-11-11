@@ -38,13 +38,19 @@ class AwacsTriggerTests(unittest.TestCase):
         self.state = {}
 
     def mission(self, mode="local", forward=0):
-        return {"guid": MISSION, "name": "机场预警", "skill_id": "air.early_warning",
+        record = {"guid": MISSION, "name": "机场预警", "skill_id": "air.early_warning",
                 "unit_guids": [OLD], "area_guid": AREA,
                 "area_points": [{"lat": 20, "lon": 129.8}, {"lat": 20.1, "lon": 130},
                                 {"lat": 20, "lon": 130.2}, {"lat": 19.9, "lon": 130}],
                 "deployment": {"mode": mode, "forward_km": forward,
                                "platform_guid": "cccccccc-0000-0000-0000-000000000001"},
                 "created_at_sim": "2026-11-06 08:00:00"}
+        self.s["existing_areas"] = [{
+            "guid": AREA, "name": "机场预警区", "type_id": "407",
+            "points": copy.deepcopy(record["area_points"]),
+            "mission_guids": [MISSION],
+        }]
+        return record
 
     def enemy(self, lon=131):
         self.s["contacts"]["air"] = [{"guid": ENEMY, "lat": 20, "lon": lon,

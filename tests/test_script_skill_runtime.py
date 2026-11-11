@@ -136,8 +136,8 @@ class HierarchicalPlannerTests(unittest.TestCase):
                             "escort_unit_guids": [], "target_contact_guids": [],
                             "loadout_guid": "", "existing_mission_guid": "",
                             "area": {"points": [
-                                {"lat": 20, "lon": 130}, {"lat": 20, "lon": 131},
-                                {"lat": 21, "lon": 131}]}, "reason": "北部防空"}]}
+                                {"lat": 21.5, "lon": 130}, {"lat": 21.5, "lon": 131},
+                                {"lat": 22.5, "lon": 131}]}, "reason": "北部防空"}]}
             if role == "component_awacs":
                 return {"version": 1, "service": "awacs", "summary": "预警机待命",
                         "skill_calls": []}

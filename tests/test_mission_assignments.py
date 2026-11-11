@@ -4,6 +4,7 @@ from io import BytesIO
 import json
 from unittest import TestCase
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
 from runtime.mozi.mission_assignments import read_blue_mission_assignments
 
@@ -36,6 +37,53 @@ class MissionAssignmentsTests(TestCase):
                 {"key": SHIP, "children": [{"key": AIR_2}]}]},
         ]
         self.assertEqual({AIR_1: TASK_1, AIR_2: TASK_2}, read({"code": 0, "data": rows}))
+
+    def test_missing_list_assignment_reads_mission_detail(self):
+        summary = {"code": 0, "data": [
+            {"id": TASK_1, "name": "预警", "type": "Support"},
+            {"id": TASK_2, "assignUnit": [{"id": AIR_2}]},
+        ]}
+        detail = {"code": 0, "data": {"missionBasicData": {
+            "assignedCombatUnit": [{"key": SHIP, "children": [{"key": AIR_1}]}]
+        }}}
+        urls = []
+
+        def fetch(url, timeout):
+            urls.append(url)
+            parsed = urlparse(url)
+            if parsed.path.endswith("/MissionGant"):
+                return BytesIO(json.dumps(summary).encode("utf-8"))
+            if parsed.path.endswith("/Mission"):
+                self.assertEqual(parse_qs(parsed.query)["Guid"], [TASK_1])
+                return BytesIO(json.dumps(detail).encode("utf-8"))
+            self.fail(f"unexpected URL: {url}")
+
+        with patch("runtime.mozi.mission_assignments.urlopen", side_effect=fetch):
+            result = read_blue_mission_assignments("http://127.0.0.1:8050/ApiCtrl/api",
+                                                   SIDE, {AIR_1, AIR_2})
+        self.assertEqual({AIR_1: TASK_1, AIR_2: TASK_2}, result)
+        self.assertEqual(2, len(urls))
+
+    def test_missing_list_assignment_with_empty_detail_is_unassigned(self):
+        summary = {"code": 0, "data": [{"id": TASK_1}]}
+        detail = {"code": 0, "data": {"missionBasicData": {"assignedCombatUnit": []}}}
+        responses = [summary, detail]
+        with patch("runtime.mozi.mission_assignments.urlopen",
+                   side_effect=lambda url, timeout: BytesIO(
+                       json.dumps(responses.pop(0)).encode("utf-8"))):
+            self.assertEqual({}, read_blue_mission_assignments(
+                "http://127.0.0.1:8050/ApiCtrl/api", SIDE, {AIR_1}))
+
+    def test_missing_list_assignment_without_detail_stays_blocked(self):
+        summary = {"code": 0, "data": [{"id": TASK_1}]}
+        detail = {"code": 0, "data": {"missionBasicData": {}}}
+        responses = [summary, detail]
+        with patch("runtime.mozi.mission_assignments.urlopen",
+                   side_effect=lambda url, timeout: BytesIO(
+                       json.dumps(responses.pop(0)).encode("utf-8"))):
+            with self.assertRaisesRegex(RuntimeError, "不能判定飞机空闲"):
+                read_blue_mission_assignments("http://127.0.0.1:8050/ApiCtrl/api",
+                                              SIDE, {AIR_1})
 
     def test_singleton_group_key(self):
         rows = [{"id": TASK_1, "assignUnit": [{"key": AIR_1, "children": ""},

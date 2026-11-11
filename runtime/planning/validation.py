@@ -14,6 +14,7 @@ from rules.awacs_area import make_awacs_area
 from rules.awacs_deployment import validate_deployments
 from rules.awacs_triggers import prepare_area, validate_call
 from rules.jammer_support import is_jammer
+from rules.patrol_spacing import validate_patrol_spacing
 
 
 _GUID = re.compile(r"^\{?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}?$")
@@ -288,5 +289,9 @@ def validate_plan(plan: dict[str, Any], situation: dict[str, Any], registry: Ski
         seen_names.add(call.mission_name)
         calls.append(call)
     validate_deployments(calls, situation)
+    # Compare the completed batch with live, mission-linked Mozi airspace.
+    # Updated missions replace their own old polygon in this comparison.
+    validate_patrol_spacing(calls, situation.get("existing_areas", []),
+                            situation=situation)
     validate_aircraft_availability(calls, situation)
     return calls

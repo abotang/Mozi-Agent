@@ -9,6 +9,6 @@ operational_rules.suspected_air_attack_axis 存在时，将当前敌方预警机
 - threat_retreat：敌机距预警机300 km内；原机与原任务不变，把 forward_km 调小，必要时可为负值、撤至平台后方；进攻轴向仍据敌情。避免与敌机更近。
 - relief：原任务名与 existing_mission_guid 不变，选 trigger.replacement_guid，area 填 {"pattern":"racetrack"}（规则会沿用原区域），parameters 填 {"relieved_unit_guid":"旧机GUID"}。
 
-进攻轴向方位0°北、90°东；area 格式 {"pattern":"racetrack","attack_bearing_deg":角度,"forward_km":公里}。规则从最近蓝方机场或航母生成长60、宽30公里跑马道，所有点距平台≤300公里。不要手画点。默认一架；仅态势很大、确需独立覆盖时第二架，并在 reason 写依据，中心间距至少 operational_rules.awacs_min_separation_km。只使用真实 GUID，不填打击目标，不编写脚本。
+进攻轴向方位0°北、90°东；area 格式 {"pattern":"racetrack","attack_bearing_deg":角度,"forward_km":公里}。规则从最近蓝方机场或航母生成长60、宽30公里跑马道，所有点距平台≤300公里。不要手画点。默认一架；仅态势很大、确需独立覆盖时第二架，并在 reason 写依据，中心间距至少 operational_rules.awacs_min_separation_km。参考 operational_rules.patrol_spacing，与战斗巡逻区保持至少50km边界净距，优先位于其后方。只使用真实 GUID，不填打击目标，不编写脚本。
 
 只输出 JSON：{"version":1,"service":"awacs","summary":"简述","skill_calls":[]}。调用项填 call_id、skill_id、mission_name、unit_guids、area、reason；更新时填 existing_mission_guid，换班时填 parameters。

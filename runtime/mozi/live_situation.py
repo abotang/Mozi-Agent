@@ -7,6 +7,7 @@ import zlib
 
 from runtime.contracts import SERVICE_UNIT_TYPES
 from runtime.mozi.mission_assignments import read_blue_mission_assignments
+from runtime.mozi.patrol_areas import read_blue_patrol_areas
 
 
 def _frame(host, port):
@@ -105,11 +106,14 @@ def collect_live_situation(*, host="127.0.0.1", rest_port=8082,
     # this project. Failure must stop planning rather than mark aircraft free.
     mission_assignments = read_blue_mission_assignments(
         api_base, side["id"], {str(row["guid"]) for row in air})
+    # Use Mozi's current mission-area linkage, not only this project's saved
+    # reports; manual and older patrols must also constrain new air stations.
+    existing_areas = read_blue_patrol_areas(api_base, side["id"])
     return {"api_base": api_base, "side": {"name": side["name"], "guid": side["id"]},
             "scenario": {"name": str(state.get("ScenarioName") or ""),
                          "start_time": start, "end_time": end,
                          "initial_time": initial},
             "units": {"air": air, "navy": navy, "army": army,
                       "submarine": submarine},
-            "contacts": contacts, "existing_missions": [], "existing_areas": [],
+            "contacts": contacts, "existing_missions": [], "existing_areas": existing_areas,
             "mission_assignments": mission_assignments}

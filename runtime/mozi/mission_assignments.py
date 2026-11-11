@@ -60,14 +60,42 @@ def _unit_ids(assigned: object, mission_guid: str) -> list[str]:
     return result
 
 
+def _detail_unit_ids(base: str, mission_guid: str) -> list[str]:
+    """Read assigned units from Mission detail when MissionGant omits them.
+
+    Missing or malformed detail remains an error: otherwise an assigned
+    aircraft could be incorrectly treated as available for a new task.
+    """
+    try:
+        with urlopen(f"{base}/Mission?Guid={quote(mission_guid)}", timeout=12) as response:
+            payload = json.load(response)
+    except Exception as exc:
+        raise RuntimeError(
+            f"任务 {mission_guid} 缺少 assignUnit，任务详情读取失败；不能判定飞机空闲"
+        ) from exc
+    data = payload.get("data") if isinstance(payload, dict) and payload.get("code") == 0 else None
+    basic = data.get("missionBasicData") if isinstance(data, dict) else None
+    if not isinstance(basic, dict) or "assignedCombatUnit" not in basic:
+        raise RuntimeError(
+            f"任务 {mission_guid} 缺少 assignUnit，详情也缺少 assignedCombatUnit；不能判定飞机空闲"
+        )
+    assigned = basic["assignedCombatUnit"]
+    if not isinstance(assigned, list):
+        raise RuntimeError(
+            f"任务 {mission_guid} 的 assignedCombatUnit 格式未知；不能判定飞机空闲"
+        )
+    return _unit_ids(assigned, mission_guid)
+
+
 def read_blue_mission_assignments(
     api_base: str, side_guid: str, aircraft_guids: set[str]
 ) -> dict[str, str]:
     """Return ``{aircraft_guid: mission_guid}`` for assigned blue aircraft.
 
     ``MissionGant`` must return ``code=0`` and either ``data=null`` (no missions)
-    or a list of mission rows. Each row must identify its mission and expose
-    ``assignUnit``. Flat units and grouped child units are both accepted.
+    or a list of mission rows. Each row must identify its mission. When a row
+    omits ``assignUnit``, its ``Mission`` detail must expose
+    ``missionBasicData.assignedCombatUnit``. Flat and grouped units are accepted.
     """
     aircraft = {_guid(value, "飞机 GUID") for value in aircraft_guids}
     if not aircraft:
@@ -96,9 +124,9 @@ def read_blue_mission_assignments(
         if not isinstance(row, dict):
             raise RuntimeError("蓝方任务分配包含非对象任务")
         mission_guid = _first_guid(row, _MISSION_ID_FIELDS, "任务 GUID")
-        if "assignUnit" not in row:
-            raise RuntimeError(f"任务 {mission_guid} 缺少 assignUnit；不能判定飞机空闲")
-        for unit_guid in _unit_ids(row["assignUnit"], mission_guid):
+        unit_guids = (_unit_ids(row["assignUnit"], mission_guid)
+                      if "assignUnit" in row else _detail_unit_ids(base, mission_guid))
+        for unit_guid in unit_guids:
             if unit_guid not in aircraft:
                 continue
             previous = occupied.get(unit_guid)

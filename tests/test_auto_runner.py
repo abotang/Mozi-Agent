@@ -1,4 +1,5 @@
 import json
+from io import BytesIO
 from itertools import count
 from pathlib import Path
 import sys
@@ -12,12 +13,65 @@ sys.path.insert(0, str(ROOT))
 
 from runtime.skills.compiler import PlanCompiler
 from runtime.contracts import ExecutionResult
-from runtime.app.daemon import AutomaticMissionRunner
+from runtime.app.daemon import AutomaticMissionRunner, _mission_exists
 from runtime.execution.executor import ScriptExecutionError
 from runtime.skills.registry import SkillRegistry
 
 
 class AutoRunnerTests(unittest.TestCase):
+    def test_mission_business_error_preserves_deduplication(self):
+        for payload in ({"code": 101, "data": None, "message": "接口暂时不可用"},
+                        {"data": None}, {"code": 0}, []):
+            with self.subTest(payload=payload), patch(
+                    "runtime.app.daemon.urlopen",
+                    return_value=BytesIO(json.dumps(payload).encode("utf-8"))):
+                self.assertTrue(_mission_exists("http://invalid/api", "existing-mission"))
+
+    def test_mission_success_response_can_confirm_absence(self):
+        for data, expected in ((None, False), ({}, False), ({"guid": "existing"}, True)):
+            with self.subTest(data=data), patch(
+                    "runtime.app.daemon.urlopen",
+                    return_value=BytesIO(json.dumps({"code": 0, "data": data}).encode("utf-8"))):
+                self.assertEqual(_mission_exists("http://invalid/api", "existing-mission"), expected)
+
+    def test_failed_planning_retries_unchanged_situation_next_poll(self):
+        self._assert_failed_proposal_retries(fail_validation=False)
+
+    def test_failed_validation_retries_unchanged_situation_next_poll(self):
+        self._assert_failed_proposal_retries(fail_validation=True)
+
+    def _assert_failed_proposal_retries(self, *, fail_validation):
+        registry = SkillRegistry(ROOT / "skills").load()
+        situation = json.loads((ROOT / "examples/situation.example.json").read_text(encoding="utf-8"))
+        # Keep AWACS on hold so its opening trigger cannot mask retry gating.
+        situation["units"]["air"] = [row for row in situation["units"]["air"]
+                                     if "预警" not in row["name"]]
+        invalid = json.loads((ROOT / "examples/plan.multiple.example.json").read_text(encoding="utf-8"))
+        invalid["skill_calls"] = invalid["skill_calls"][:1]
+        invalid["skill_calls"][0]["area"] = None
+
+        class Planner:
+            calls = 0
+
+            def plan(self, *_):
+                self.calls += 1
+                if self.calls == 1:
+                    if fail_validation:
+                        return invalid
+                    raise RuntimeError("temporary model failure")
+                return {"version": 1, "summary": "观察", "skill_calls": []}
+
+        planner = Planner()
+        with TemporaryDirectory(dir=ROOT) as folder:
+            runner = AutomaticMissionRunner(
+                collector=lambda: json.loads(json.dumps(situation)), planner=planner,
+                registry=registry,
+                compiler=PlanCompiler(registry, ROOT / "scripts/powershell", folder),
+                executor=object(), state_path=Path(folder) / "state.json",
+                sleep=lambda _: None, clock=lambda: 100.0, output=lambda _: None)
+            runner.run("观察", max_cycles=2)
+        self.assertEqual(planner.calls, 2)
+
     def test_duplicate_unit_gets_one_immediate_replan(self):
         registry = SkillRegistry(ROOT / "skills").load()
         situation = json.loads((ROOT / "examples/situation.example.json")

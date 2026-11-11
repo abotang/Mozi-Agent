@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [Parameter(Mandatory)]
     [string]$ConfigPath,
@@ -268,6 +268,10 @@ function Set-PatrolRules {
         TransitThrottle_Aircraft='2'; StationThrottle_Aircraft='1'; AttackThrottle_Aircraft='3'
         TransitThrottle_Ship='2'; StationThrottle_Ship='2'; AttackThrottle_Ship='3'
     }
+    if ($TaskKey -eq 'airCombatPatrol') {
+        $rules.TransitAltitude_Aircraft = '3000'
+        $rules.StationAltitude_Aircraft = '10000'
+    }
     if ($null -ne $Outbound) { $rules.SideWay = $Outbound.id }
     if ($null -ne $OnStation) { $rules.PatrolAreaSideWay = $OnStation.id }
     $response = Invoke-MoziPost 'Mission' @{ type='PatrolMissionRules'; MissionGuid=$MissionGuid; Rules=$rules }
@@ -286,7 +290,7 @@ function Set-SupportRules {
             name=[string]$Task.name; startTime=[string]$config.startTime; endTime=[string]$config.endTime
             area_ID=$AreaGuid; MNOS='1'; OTR=$true; OTO=$false
             AEOIPA=$emissionsOnlyOnStation; AEOOS=$emissionsOnlyOnStation
-            OneTankingCycleOnly=$false; status='1'; FlightSize='1'; AirFuel='0'
+            OneTankingCycleOnly=($Key -eq 'airEarlyWarning'); status='1'; FlightSize='1'; AirFuel='0'
             MinAircraftReq='1'; UseFlightSizeHardLimit=$false
             TransitThrottle_Aircraft='2'; TransitAltitude_Aircraft=$transitAltitude
             StationThrottle_Aircraft='1'; StationAltitude_Aircraft=$stationAltitude
@@ -294,6 +298,44 @@ function Set-SupportRules {
     }
     Assert-MoziSuccess $response "任务 $($Task.name) 写入支援规则"
     $response
+}
+
+function Test-EarlyWarningEmcon {
+    param([object]$Response)
+    if ($null -eq $Response -or $Response.code -ne 0 -or $null -eq $Response.data) { return $false }
+    if ($null -eq $Response.data.PSObject.Properties['EMCSetting']) { return $false }
+    $emcon = $Response.data.EMCSetting
+    if ($null -eq $emcon) { return $false }
+    foreach ($field in @('EMCON_AccordingSuperior', 'Radar', 'OECM', 'Sonar')) {
+        if ($null -eq $emcon.PSObject.Properties[$field]) { return $false }
+    }
+    return (([string]$emcon.EMCON_AccordingSuperior -ieq 'False') -and
+            ([string]$emcon.Radar -eq '1') -and
+            ([string]$emcon.OECM -eq '0') -and
+            ([string]$emcon.Sonar -eq '0'))
+}
+
+function Set-EarlyWarningEmcon {
+    param([string]$MissionGuid, [string]$TaskName)
+    # Mission doctrine controls the screenshot's radar/jammer/sonar settings.
+    # AEOOS in SupportMissionRules only controls when emission may begin.
+    $write = Invoke-MoziPost 'DoctrineInfo' @{
+        Guid=$MissionGuid; SubjectType='Mission'; IsEscort=$false
+        Value=@{ EMCSetting=@{
+            EMCON_AccordingSuperior=$false; Radar='1'; OECM='0'; Sonar='0'
+        } }
+    }
+    Assert-MoziSuccess $write "任务 $TaskName 设置预警电磁管控"
+    $path = "DoctrineInfo?Guid=$MissionGuid&Type=Mission&IsEscort=false"
+    $readback = Invoke-MoziGet $path
+    Assert-MoziSuccess $readback "任务 $TaskName 回读预警电磁管控"
+    for ($attempt = 0; $attempt -lt 6 -and -not (Test-EarlyWarningEmcon $readback); $attempt++) {
+        Start-Sleep -Milliseconds 500
+        $readback = Invoke-MoziGet $path
+        Assert-MoziSuccess $readback "任务 $TaskName 回读预警电磁管控"
+    }
+    Assert-Condition (Test-EarlyWarningEmcon $readback) "任务 $TaskName 电磁管控未回读到不继承上级、雷达打开、干扰机/声纳静默"
+    [ordered]@{ write=$write; readback=$readback }
 }
 
 function Invoke-MissionOperation {
@@ -312,6 +354,7 @@ function Invoke-OneTask {
     $outbound = $null
     $onStation = $null
     $rulesResponse = $null
+    $doctrineResponse = $null
 
     if ($Task.missionType -in @('Patrol','Support')) {
         $area = New-ScenarioArea $Task.area
@@ -338,6 +381,9 @@ function Invoke-OneTask {
     $assign = Invoke-MissionOperation 'AssignUnitToMission' $mission.guid @($Task.unitGuids) "任务 $($Task.name) 分配主任务单元"
     $escort = Invoke-MissionOperation 'AssignUnitToEscort' $mission.guid @($Task.escortUnitGuids) "任务 $($Task.name) 分配护航单元"
     $target = Invoke-MissionOperation 'AssignUnitAsTarget' $mission.guid @($Task.targetContactGuids) "任务 $($Task.name) 分配目标"
+    if ($Key -eq 'airEarlyWarning') {
+        $doctrineResponse = Set-EarlyWarningEmcon $mission.guid ([string]$Task.name)
+    }
     $verify = Invoke-MoziGet "Mission?Guid=$($mission.guid)"
     Assert-MoziSuccess $verify "任务 $($Task.name) 回读"
 
@@ -345,6 +391,16 @@ function Invoke-OneTask {
         Assert-Condition (@($verify.data.patrolmissionData.PatrolArea).Count -ge 3) "任务 $($Task.name) 未回读到巡逻区"
         if ($Key -like 'air*') {
             Assert-Condition ($verify.data.patrolmissionData.OTR -eq $true) "任务 $($Task.name) 未启用1/3规则"
+        }
+        if ($Key -eq 'airCombatPatrol') {
+            $transitAltitude = 0.0
+            $transitReported = [string]$verify.data.patrolmissionData.TransitAltitude_Aircraft
+            $transitParsed = [double]::TryParse($transitReported, [ref]$transitAltitude)
+            Assert-Condition ($transitParsed -and [math]::Abs($transitAltitude - 3000) -lt 0.5) "任务 $($Task.name) 战斗巡逻出航高度回读不是3000米：$transitReported"
+            $stationAltitude = 0.0
+            $stationReported = [string]$verify.data.patrolmissionData.StationAltitude_Aircraft
+            $stationParsed = [double]::TryParse($stationReported, [ref]$stationAltitude)
+            Assert-Condition ($stationParsed -and [math]::Abs($stationAltitude - 10000) -lt 0.5) "任务 $($Task.name) 战斗巡逻阵位高度回读不是10000米：$stationReported"
         }
     } elseif ($Task.missionType -eq 'Strike') {
         Assert-Condition (@($verify.data.strikeMissionData.targetList).Count -gt 0) "任务 $($Task.name) 未回读到打击目标"
@@ -361,13 +417,15 @@ function Invoke-OneTask {
             Assert-Condition ($transitParsed -and [math]::Abs($transitAltitude - 2000) -lt 0.5) "任务 $($Task.name) 预警出航高度回读不是2000米：$transitReported"
             $emconReported = [string]$verify.data.supportmissionData.AEOOS
             Assert-Condition ($emconReported -ieq 'True') "任务 $($Task.name) 未回读到仅在阵位开启电磁辐射：$emconReported"
+            $oneTankingReported = [string]$verify.data.supportmissionData.OneTankingCycleOnly
+            Assert-Condition ($oneTankingReported -ieq 'True') "任务 $($Task.name) 未回读到一个加油周期后返航选项：$oneTankingReported"
         }
     }
 
     [ordered]@{
         key=$Key; name=[string]$Task.name; missionGuid=$mission.guid; reused=$mission.reused
         loadouts=@($loadouts); area=$area; outboundRoute=$outbound; onStationRoute=$onStation
-        rules=$rulesResponse; assign=$assign; escort=$escort; target=$target; verification=$verify
+        rules=$rulesResponse; doctrine=$doctrineResponse; assign=$assign; escort=$escort; target=$target; verification=$verify
     }
 }
 

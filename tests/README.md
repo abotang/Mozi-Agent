@@ -5,6 +5,8 @@
 | 测试文件 | 覆盖的代码/行为 |
 | --- | --- |
 | `test_agent_activation_joint_refresh.py` | `rules/agent_activation.py`、`joint_refresh.py`，联合/专业 Agent 跳过与缓存 |
+| `test_agent_context.py` | 专业 Agent 输入隔离、已有任务归属、实际模型请求中固定 Skill 合同的顺序 |
+| `test_plan_review.py` | 复评与初稿合并时保留独立调用、避免替代任务和单位冲突 |
 | `test_agent_monitor.py` | `agents/monitor_log.py`、终端监控事件的输入输出和错误记录 |
 | `test_area_cleanup.py` | `runtime/execution/area_cleanup.py`，原巡逻任务换区后即使 missionList 滞后也只清理任务详情证实不用的旧区域 |
 | `test_auto_runner.py` | `runtime/app/daemon.py`，轮询、去重、并行、失败不确定态、态势记忆 |
@@ -14,6 +16,8 @@
 | `test_awacs_recovery.py` | 预警任务执行结果不确定时的现场任务核对、自动解锁与继续阻断条件 |
 | `test_live_situation_roles.py` | `runtime/mozi/live_situation.py`，己方单位与接触分类 |
 | `test_mission_assignments.py` | 墨子任务列表中飞机占用的平面/分组结构与读取失败处理 |
+| `test_patrol_areas.py` | 只读实况空战巡逻/预警区、过滤滞后任务关联、排除舰艇巡逻区，读取失败时阻止误判空域空闲 |
+| `test_patrol_spacing.py` | 战斗巡逻区和预警区的相交、包含、边界净距、预警区后方位置、改区替换与复用区域校验；单个敌预警接触不作为确定轴向，既有违规不阻断无关打击，覆盖 `validate_plan` 集成入口 |
 | `test_aircraft_occupancy.py` | 跨轮次已占用飞机不可新建任务；本项目已占用巡逻机可随完整编组更新原任务区域，执行前再次回读 |
 | `test_side_doctrine.py` | 蓝方开局接战条令的触发时机与 PowerShell 执行结果校验 |
 | `test_jammer_support.py` | 飞机打击任务触发、目标和空闲检查、单机派遣与后方伴随航点 |

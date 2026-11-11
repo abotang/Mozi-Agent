@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from rules.situation_memory import _point, nearest_blue_km, range_band
+from rules.scenario_timeline import scenario_timeline
 
 
 CONTACT_KINDS = ("air", "sea", "land", "submarine")
@@ -14,6 +15,7 @@ def strategic_snapshot(situation: dict) -> dict:
     scenario = situation.get("scenario", {})
     units = situation.get("units", {})
     contacts = situation.get("contacts", {})
+    timeline = scenario_timeline(scenario)
     threat_ranges = {}
     severity = {"unknown": 0, "beyond_300_km": 1, "within_300_km": 2,
                 "within_150_km": 3, "within_75_km": 4}
@@ -25,6 +27,8 @@ def strategic_snapshot(situation: dict) -> dict:
         "side_guid": str(situation.get("side", {}).get("guid", "")),
         "scenario": str(scenario.get("initial_time") or scenario.get("start_time") or ""),
         "scenario_name": str(scenario.get("name", "")),
+        "scenario_end": str(scenario.get("end_time") or ""),
+        "time_priority": timeline["planning_priority"],
         "forces": {kind: sorted(str(row.get("guid", "")).strip("{}").lower()
                                 for row in units.get(kind, []) if isinstance(row, dict))
                    for kind in FORCE_KINDS},
@@ -44,6 +48,10 @@ def refresh_reason(cache: dict | None, snapshot: dict, instruction: str,
     if any(previous.get(key) != snapshot.get(key)
            for key in ("side_guid", "scenario", "scenario_name")):
         return "想定或推演方变化"
+    if previous.get("scenario_end") != snapshot.get("scenario_end"):
+        return "想定结束时间变化"
+    if previous.get("time_priority") != snapshot.get("time_priority"):
+        return "推演时间进入新的筹划阶段"
     if previous.get("forces") != snapshot.get("forces"):
         return "蓝方兵力变化"
     if previous.get("threat_present") != snapshot.get("threat_present"):

@@ -7,7 +7,7 @@ from copy import deepcopy
 import time
 from typing import Any
 
-from agents.model_client import AgentConfig, ChatCompletionClient
+from agents.model_client import AgentConfig, ChatCompletionClient, ModelError
 from runtime.planning.plan_adapter import normalize_plan
 
 from runtime.contracts import AGENT_OWNERS, SERVICES
@@ -17,13 +17,18 @@ from agents import (AirCommanderAgent, ArmyCommanderAgent, AwacsCommanderAgent,
 from agents.prompt_loader import load_prompt
 from rules.awacs_area import is_awacs
 from rules.awacs_deployment import minimum_separation_km
+from rules.patrol_spacing import patrol_spacing_advisory
 from rules.navy_patrol import available_skills
 from rules.agent_activation import skip_reason
 from rules.air_patrol_update import patrol_update_options, validate_air_call
 from rules.joint_refresh import refresh_reason, strategic_snapshot
+from rules.scenario_timeline import scenario_timeline
 from rules.situation_memory import filter_brief
 from rules.threat_axis import suspected_air_attack_axis
 from rules.jammer_support import is_jammer
+from rules.air_strike_review import strike_opportunities, review_focus
+from rules.agent_context import service_rules, service_missions
+from rules.plan_review import merge_review_calls
 
 
 class HierarchicalSkillPlanner:
@@ -84,11 +89,16 @@ class HierarchicalSkillPlanner:
 
     def plan(self, situation: dict[str, Any], instruction: str) -> dict[str, Any]:
         rules = dict(situation.get("operational_rules") or {})
+        # Use the same deterministic simulation-time reminder for joint and
+        # service Agents, including the offline ``run.py plan`` entry point.
+        rules["scenario_time"] = scenario_timeline(situation.get("scenario"))
         rules.pop("suspected_air_attack_axis", None)
         suspected_axis = suspected_air_attack_axis(situation)
         if suspected_axis:
             rules["suspected_air_attack_axis"] = suspected_axis
         rules["awacs_min_separation_km"] = minimum_separation_km(situation)
+        rules["patrol_spacing"] = patrol_spacing_advisory(
+            situation.get("existing_areas", []), situation=situation)
         navy_patrol_allowed = rules.get("navy_patrol_opening_allowed", True)
 
         catalogs = {
@@ -114,6 +124,11 @@ class HierarchicalSkillPlanner:
             "navy": situation["units"].get("navy", []),
             "army": situation["units"].get("army", []),
         }
+        # This is a user-defined mission-creation threshold, not a claim
+        # about actual weapon or loadout performance. The rule uses only current
+        # contacts and aircraft positions; no loadout-radius lookup is made.
+        rules["air_strike_opportunities"] = strike_opportunities(
+            situation, catalogs["air"], own_unit_rows["air"])
         skips = {
             owner: skip_reason(owner, own_unit_rows[owner], catalogs[owner],
                                situation["contacts"], rules)
@@ -139,6 +154,9 @@ class HierarchicalSkillPlanner:
                 },
             }
             joint_context["situation"]["operational_rules"] = deepcopy(rules)
+            # Strategic command only needs the compact conflict summary;
+            # polygon vertices are reserved for the aircraft planners.
+            joint_context["situation"].pop("existing_areas", None)
             directive = self._joint(self.joint_agent.decide(joint_context))
             self._joint_cache = {"instruction": joint_instruction, "snapshot": snapshot,
                                  "at": now, "directive": deepcopy(directive)}
@@ -164,15 +182,17 @@ class HierarchicalSkillPlanner:
                 "objective": self.config.objective,
                 "instruction": instruction,
                 "joint_directive": directive,
-                "operational_rules": deepcopy(rules),
+                "operational_rules": service_rules(rules, owner),
                 "own_units": deepcopy(own_unit_rows[owner]),
                 "friendly_context": {
                     key: deepcopy(value) for key, value in situation["units"].items()
                     if key in SERVICES and key != ("air" if owner == "awacs" else owner)
                 },
                 "contacts": deepcopy(situation["contacts"]),
-                "existing_missions": deepcopy(situation.get("existing_missions", [])),
-                "existing_areas": deepcopy(situation.get("existing_areas", [])),
+                "existing_missions": service_missions(
+                    situation.get("existing_missions", []), owner, self.registry),
+                "existing_areas": deepcopy(situation.get("existing_areas", []))
+                if owner in ("air", "awacs") else [],
                 "task_skills": catalogs[owner],
             }
             if owner == "air":
@@ -185,6 +205,76 @@ class HierarchicalSkillPlanner:
             proposal["skill_calls"] = normalize_plan({
                 "version": 1, "skill_calls": proposal["skill_calls"]
             })["skill_calls"]
+            if owner == "air":
+                focus = review_focus(
+                    rules["air_strike_opportunities"], proposal,
+                    rules["scenario_time"]["planning_priority"])
+                if focus:
+                    # Reconsider only the air proposal. Cached joint intent is
+                    # not a weapon-range fact and other Agents need no re-call.
+                    retry_context = deepcopy(context)
+                    retry_context["planning_feedback"] = {
+                        "rule": "air_strike_1000km_review",
+                        "required_skill_id": focus,
+                        "eligible_current_contacts": deepcopy(
+                            rules["air_strike_opportunities"]["eligible_by_skill"][focus]),
+                        "previous_proposal": deepcopy(proposal),
+                        "instruction": (
+                            "当前目标在用户规定的飞机打击任务1000公里创建范围内。"
+                            "联合方案中的距离判断不是武器射程校验。请优先提交一项"
+                            f"{focus} 调用；只有本轮输入中明确的燃油、损伤、"
+                            "武器不适配或单位占用等事实才可暂缓，并在summary写清。"
+                            "缺loadout_guid、未知精确射程、目标远离或单纯距离远"
+                            "不能单独阻断。保留不冲突的原巡逻任务更新。"
+                        ),
+                    }
+                    review = {
+                        "triggered": True, "focus_skill_id": focus,
+                        "strike_submitted": False,
+                    }
+                    try:
+                        revised = self._component(
+                            self.service_agents[owner].decide(retry_context), owner)
+                        revised["skill_calls"] = normalize_plan({
+                            "version": 1, "skill_calls": revised["skill_calls"]
+                        })["skill_calls"]
+                        submitted = any(call.get("skill_id") == focus
+                                        for call in revised["skill_calls"])
+                        review["strike_submitted"] = submitted
+                        if submitted:
+                            # Both are unexecuted proposals. Keep independent
+                            # calls omitted by the review; revised choices win
+                            # when identities or aircraft allocation conflict.
+                            merged, merge_report = merge_review_calls(
+                                proposal["skill_calls"], revised["skill_calls"])
+                            revised["skill_calls"] = merged
+                            for key, value in merge_report.items():
+                                if value:
+                                    review[key] = value
+                            preserved = merge_report["preserved_call_ids"]
+                            if preserved:
+                                revised["summary"] = (
+                                    f"复评补充方案，并保留原方案中 {len(preserved)} 项独立调用；"
+                                    + str(revised.get("summary") or ""))
+                            proposal = revised
+                        else:
+                            # No strike was added: preserve both the first
+                            # answer's calls and the summary describing them.
+                            review["revised_summary"] = str(revised.get("summary") or "")
+                    except (ModelError, ValueError) as exc:
+                        # An optional review must not discard already returned
+                        # proposals from this or other service Agents. Normal
+                        # plan validation still runs after this fallback.
+                        review["error"] = {
+                            "type": type(exc).__name__, "message": str(exc),
+                        }
+                    proposal["air_strike_review"] = review
+                    trace = getattr(self.client, "trace_event", None)
+                    if callable(trace):
+                        trace("component_air", "rule_review",
+                              reason=("可选复评失败，保留首次方案" if "error" in review
+                                      else "1000公里内有当前目标和空闲飞机，原方案未提交对应打击"),
+                              output=deepcopy(review))
             return proposal
 
         with ThreadPoolExecutor(max_workers=self.config.component_parallelism,

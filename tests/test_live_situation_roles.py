@@ -23,7 +23,8 @@ class LiveSituationRoleTests(unittest.TestCase):
                            "contacts": []}], "FightTree": []}
         with patch("runtime.mozi.live_situation._frame", return_value=state), \
                 patch("runtime.mozi.live_situation._times", return_value=("start", "end", "initial")), \
-                patch("runtime.mozi.live_situation.read_blue_mission_assignments", return_value={}):
+                patch("runtime.mozi.live_situation.read_blue_mission_assignments", return_value={}), \
+                patch("runtime.mozi.live_situation.read_blue_patrol_areas", return_value=[]):
             situation = collect_live_situation()
         self.assertEqual([row["guid"] for row in situation["units"]["air"]], ["air-1"])
         self.assertEqual([row["guid"] for row in situation["units"]["navy"]], ["ship-1"])

@@ -52,15 +52,30 @@ class PowerShellUtf8Tests(unittest.TestCase):
                 else:
                     if body.get("type") == "PatrolMissionRules":
                         self.server.last_otr = body["Rules"]["OTR"]
+                        self.server.last_patrol_rules = body["Rules"]
                     if body.get("type") == "SupportMissionRules":
                         self.server.last_support_alt = body["Rules"]["StationAltitude_Aircraft"]
                         self.server.last_support_transit = body["Rules"]["TransitAltitude_Aircraft"]
                         self.server.last_support_emcon = body["Rules"]["AEOOS"]
+                        self.server.last_support_one_tanking = body["Rules"]["OneTankingCycleOnly"]
+                    if self.path.endswith("/DoctrineInfo"):
+                        self.server.last_mission_emcon = body["Value"]["EMCSetting"]
                     self.respond({})
 
             def do_GET(self):
+                if self.path.startswith("/ApiCtrl/api/DoctrineInfo?"):
+                    self.respond({"EMCSetting": getattr(
+                        self.server, "mission_emcon_override",
+                        getattr(self.server, "last_mission_emcon", {}))})
+                    return
                 self.respond({"patrolmissionData": {
-                    "PatrolArea": [1, 2, 3], "OTR": getattr(self.server, "last_otr", False)},
+                    "PatrolArea": [1, 2, 3], "OTR": getattr(self.server, "last_otr", False),
+                    "TransitAltitude_Aircraft": getattr(
+                        self.server, "last_patrol_rules", {}).get(
+                            "TransitAltitude_Aircraft", "未定"),
+                    "StationAltitude_Aircraft": getattr(
+                        self.server, "last_patrol_rules", {}).get(
+                            "StationAltitude_Aircraft", "未定")},
                     "supportmissionData": {
                         "area": [1, 2, 3],
                         "StationAltitude_Aircraft": getattr(
@@ -70,7 +85,10 @@ class PowerShellUtf8Tests(unittest.TestCase):
                             self.server, "support_transit_override",
                             getattr(self.server, "last_support_transit", "未定")),
                         "AEOOS": getattr(self.server, "support_emcon_override",
-                                          getattr(self.server, "last_support_emcon", False))}})
+                                          getattr(self.server, "last_support_emcon", False)),
+                        "OneTankingCycleOnly": getattr(
+                            self.server, "support_one_tanking_override",
+                            getattr(self.server, "last_support_one_tanking", False))}})
 
         try:
             server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -125,6 +143,11 @@ class PowerShellUtf8Tests(unittest.TestCase):
                     "name": "机场近场预警", "guid": mission_guid,
                     "skill_id": "air.early_warning", "unit_guids": awacs_call["unit_guids"],
                     "area_center": {"lat": 20.3, "lon": 130.3}}]
+                situation["existing_areas"] = [{
+                    "guid": area_guid, "name": "机场近场预警区", "type_id": "407",
+                    "points": calls[-1].area["points"],
+                    "mission_guids": [mission_guid],
+                }]
                 situation["operational_rules"] = {"awacs_trigger": {
                     "kind": "relief", "mission_name": "机场近场预警", "mission_guid": mission_guid,
                     "unit_guid": awacs_call["unit_guids"][0],
@@ -153,6 +176,15 @@ class PowerShellUtf8Tests(unittest.TestCase):
                 server.support_emcon_override = False
                 with self.assertRaisesRegex(ScriptExecutionError, "未回读到仅在阵位开启电磁辐射"):
                     executor.execute_prevalidated(relief_invocation[0])
+                server.support_emcon_override = True
+                server.support_one_tanking_override = False
+                with self.assertRaisesRegex(ScriptExecutionError, "未回读到一个加油周期后返航选项"):
+                    executor.execute_prevalidated(relief_invocation[0])
+                server.support_one_tanking_override = True
+                server.mission_emcon_override = {
+                    "EMCON_AccordingSuperior": True, "Radar": "0", "OECM": "0", "Sonar": "0"}
+                with self.assertRaisesRegex(ScriptExecutionError, "电磁管控未回读到"):
+                    executor.execute_prevalidated(relief_invocation[0])
             self.assertTrue(results[-1].success, results[-1].stderr)
             area_posts = [item for item in Handler.requests if item[0].endswith("/ScenArea")]
             self.assertEqual(len(area_posts), 3)
@@ -163,19 +195,35 @@ class PowerShellUtf8Tests(unittest.TestCase):
                              if item[2].get("type") == "createMission"]
             self.assertEqual(mission_posts[0][2]["createMission"]["name"],
                              "航母北侧战斗巡逻")
-            patrol_rules = [item[2]["Rules"]["OTR"] for item in Handler.requests
+            patrol_rules = [item[2]["Rules"] for item in Handler.requests
                             if item[2].get("type") == "PatrolMissionRules"]
-            self.assertEqual(patrol_rules, [True, False])
+            self.assertEqual([rule["OTR"] for rule in patrol_rules], [True, False])
+            self.assertEqual(patrol_rules[0]["TransitAltitude_Aircraft"], "3000")
+            self.assertEqual(patrol_rules[0]["StationAltitude_Aircraft"], "10000")
+            self.assertNotIn("TransitAltitude_Aircraft", patrol_rules[1])
+            self.assertNotIn("StationAltitude_Aircraft", patrol_rules[1])
             support_rules = [item[2]["Rules"] for item in Handler.requests
                              if item[2].get("type") == "SupportMissionRules"]
-            self.assertEqual(len(support_rules), 5)
+            self.assertEqual(len(support_rules), 7)
             self.assertTrue(support_rules[0]["OTR"])
             self.assertEqual([rule["StationAltitude_Aircraft"] for rule in support_rules],
-                             ["10000"] * 5)
+                             ["10000"] * 7)
             self.assertEqual([rule["TransitAltitude_Aircraft"] for rule in support_rules],
-                             ["2000"] * 5)
+                             ["2000"] * 7)
             self.assertTrue(all(rule["AEOIPA"] is True and rule["AEOOS"] is True
                                 for rule in support_rules))
+            self.assertTrue(all(rule["OneTankingCycleOnly"] is True
+                                for rule in support_rules))
+            doctrine_posts = [item[2] for item in Handler.requests
+                             if item[0].endswith("/DoctrineInfo")]
+            self.assertEqual(len(doctrine_posts), len(support_rules))
+            self.assertTrue(all(body["Guid"] == mission_guid and
+                                body["SubjectType"] == "Mission" and
+                                body["IsEscort"] is False and
+                                body["Value"]["EMCSetting"] == {
+                                    "EMCON_AccordingSuperior": False,
+                                    "Radar": "1", "OECM": "0", "Sonar": "0"}
+                                for body in doctrine_posts))
             operations = [item[2]["type"] for item in Handler.requests
                           if item[2].get("type") in ("UnAssignUnitToMission", "AssignUnitToMission")]
             self.assertEqual(operations[-2:], ["UnAssignUnitToMission", "AssignUnitToMission"])
